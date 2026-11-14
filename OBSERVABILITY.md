@@ -1,0 +1,94 @@
+# Observabilidade (OpenTelemetry) — Jardim das Sombras
+
+A API exporta **traces** e **métricas** via OTLP/HTTP para o stack de observabilidade do ecossistema
+Ravena, que fica no repo **ravena-ai**, pasta `observability/` (otel-collector + Jaeger + Prometheus + Grafana).
+A telemetria é **opcional**: sem endpoint configurado nada do SDK é carregado e a API se comporta exatamente como antes.
+
+## Como ligar
+
+1. Suba o stack: `cd ../ravena-ai/observability && docker compose up -d` (Jaeger UI em http://localhost:16686).
+2. No `.env` da raiz deste repo (o compose repassa para o container `api`):
+
+   ```env
+   OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318
+   OTEL_ID_SALT=<o mesmo segredo usado na ravena-ai e no waifuletes>
+   ```
+3. `docker compose up -d --build api`. No log deve aparecer `[otel] telemetria ligada → ...`.
+
+Para desligar: apague `OTEL_EXPORTER_OTLP_ENDPOINT` ou defina `OTEL_SDK_DISABLED=true` e recrie o container.
+
+## Variáveis
+
+| Variável | Padrão | Uso |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | vazio (desligado) | Endpoint OTLP/HTTP do collector |
+| `OTEL_SERVICE_NAME` | `jardim-das-sombras` | `service.name` |
+| `OTEL_ID_SALT` | aleatório por processo | Segredo do HMAC que pseudonimiza o usuário (`jds.user.id_hash`). Igual nos 3 serviços para correlacionar |
+| `OTEL_SDK_DISABLED` | vazio | `true` força desligado |
+| `OTEL_LOG_LEVEL` | `error` | Nível do diag logger do SDK |
+| `OTEL_DEPLOYMENT_ENVIRONMENT` | `NODE_ENV` | `deployment.environment.name` |
+
+## Como funciona
+
+- `api/src/instrumentation.ts` é carregado antes do servidor (`node --import ./dist/instrumentation.js dist/server.js`,
+  no `CMD` do Dockerfile e no `npm start`). Sem endpoint, retorna sem importar nada do SDK.
+- Falhas no bootstrap só geram `console.warn`. Collector fora do ar: o export falha em segundo plano
+  (timeout 10 s, fila de 4096 spans que descarta o excedente) e as requisições não atrasam.
+- Instrumentações: HTTP (server/client), undici (`fetch`), `@fastify/otel` (rotas com `http.route`; só o hook
+  `preHandler` vira span), pino (`trace_id`/`span_id` nos logs JSON do Fastify), runtime do Node (event loop, heap, GC).
+- Prisma: spans manuais `prisma {Model}.{operação}` (CLIENT) via `$extends`. O `@prisma/instrumentation` 5.22
+  depende do SDK 1.x e quebra o processo com o SDK 2.x, por isso não é usado (nem `previewFeatures = ["tracing"]`).
+- Propagação W3C `traceparent`: chamadas da ravena-ai continuam o mesmo trace; o aviso de colheita
+  (`POST /api/games/fazenda/harvest`) é um span CLIENT filho de `farm harvest` e continua na ravena-ai.
+- Helpers em `api/src/telemetry.ts` (`withSpan`, `setAttrs`, `addEvent`, `recordError`, `hashId`, `isEnabled`).
+
+## Privacidade
+
+- Nunca vão para spans: ID cru de usuário, nome de jogador/fazenda, textos livres, tokens, headers.
+- Usuário só como `jds.user.id_hash` = HMAC-SHA256(`OTEL_ID_SALT`, id), 16 hex.
+- `url.path`: segmentos com ≥ 6 dígitos ou `@` viram `{id}` (a rota parametrizada fica em `http.route`).
+- `url.query`: só parâmetros de render (`format`, `tooltips`, `planted_slots`...) mantêm o valor; `token`, `id`,
+  `user_id`, `user_name`, `key`, `apiKey`, `auth` etc. viram `REDACTED`.
+- Headers não são gravados. Prisma não grava argumentos de query.
+- O collector ainda aplica uma segunda camada de mascaramento (ver `ravena-ai/observability`).
+
+## Spans e atributos deste serviço
+
+Atributos comuns aos 3 serviços: `app.outcome` = `ok` | `rejected` | `error` e `app.reject.reason` (código do
+`DomainError` em minúsculas, ex. `insufficient_coins`, `not_ready_for_harvest`, `daily_already_claimed`).
+Rejeição de negócio **não** marca o span como ERROR; exceção inesperada marca (`error.type` + exceção).
+
+| Span | Atributos |
+|---|---|
+| `farm render` | `jds.render.kind` = farm/share/badge, `jds.render.cache` = hit/miss, `jds.render.bytes`, `jds.render.draw_ms`, `jds.render.encode_ms` |
+| `farm plant` | `jds.plant.random`, `jds.plant.count`, `jds.plant.id` (ID do catálogo) |
+| `farm harvest` | `jds.harvest.all`, `jds.harvest.items`, `jds.harvest.plant_types`, `jds.harvest.withered_cleared`, `jds.harvest.coins`, `jds.notify.sent`, `jds.notify.skip_reason` |
+| `farm daily` | `jds.daily.coins`, `jds.daily.items` |
+| `farm sell` | `jds.sell.all`, `jds.sell.items`, `jds.sell.coins` |
+| `farm use` | — |
+| `farm decorate` | `jds.decorate.op` = equip/unequip/batch, `jds.decorate.count` |
+| `shop buy` | `jds.shop.quantity`, `jds.shop.item_id`, `jds.shop.cost` |
+| `inventory get` | `jds.inventory.found`, `jds.inventory.items` |
+| `prisma {Model}.{op}` | `db.system.name`, `db.operation.name`, `db.collection.name` |
+
+Todos os spans de negócio têm `jds.user.id_hash`.
+
+## Consultas prontas no Jaeger (http://localhost:16686, serviço `jardim-das-sombras`)
+
+- Renders lentos: operação `farm render`, tags `jds.render.cache=miss`, Min Duration `50ms`.
+- Encode bloqueando o event loop: `farm render` com `jds.render.kind=farm` e ordenar por duração; compare `jds.render.encode_ms`.
+- Rejeições: tags `app.outcome=rejected` (ou `app.reject.reason=insufficient_coins`).
+- Erros reais: tags `error=true`.
+- Colheita → bot: operação `farm harvest`, tag `jds.notify.sent=true` (o trace segue para `ravena-ai`).
+- Um jogador: tag `jds.user.id_hash=<hash>` (calcule com o mesmo `OTEL_ID_SALT`).
+- Correlacionar log: `docker logs jardim-api | grep <trace_id>`.
+
+## Limitações
+
+- `canvas.toBuffer` é síncrono: o span mostra o custo (`encode_ms`), mas não o reduz. No @napi-rs/canvas o desenho é
+  adiado e quase todo o custo aparece no encode (`draw_ms` fica perto de 0).
+- O `setErrorHandler` do `server.ts` é definido depois do registro dos plugins de rota, então hoje ele não é
+  aplicado a essas rotas (comportamento já existente, não alterado). 5xx nelas aparecem como erro pelos spans
+  HTTP/@fastify/otel.
+- Overhead medido (200 requisições sequenciais, local): rotas baratas (~3 ms) ganham ~0,6–1 ms; o render (~27 ms) ~+1,3 ms.
+- Sem logs via OTLP (só `trace_id` no stdout); sem Loki.
