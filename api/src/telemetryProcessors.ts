@@ -4,7 +4,9 @@
  * - FastifyClientErrorProcessor: o @fastify/otel marca `request` e `handler - *` como ERROR (com a
  *   mensagem do erro) em todo erro lançado, inclusive rejeições de negócio 4xx (DomainError). Aqui
  *   esses spans voltam para UNSET (o `request` 4xx vai para OK, ver onEnd), sem mensagem e sem evento
- *   de exceção; fica só o código em `app.reject.reason`. 5xx continuam ERROR.
+ *   de exceção. 5xx continuam ERROR. O resultado (`app.outcome`/`app.reject.reason`) NÃO vai para
+ *   esses spans internos: fica só no span de negócio (`farm plant`...), senão a mesma rejeição
+ *   aparecia 3x no painel "Top operações rejeitadas" (span de negócio + `request` + `handler - *`).
  * - ThrottledDiagLogger: diag do SDK sem stack trace (só a 1ª linha) e no máximo 1 linha por minuto
  *   por tipo de mensagem (collector fora do ar gera ECONNREFUSED a cada export).
  */
@@ -31,21 +33,13 @@ function parentId(span: ReadableSpan): string | undefined {
   return span.parentSpanContext?.spanId;
 }
 
-/** Troca ERROR→UNSET, remove a mensagem e os eventos de exceção; guarda só o código do erro. */
+/** Troca ERROR→UNSET e remove a mensagem e os eventos de exceção (que trazem input do usuário). */
 export function downgradeClientError(span: ReadableSpan): void {
   const s = span as unknown as MutableSpan;
-  let code: unknown;
-  for (const ev of s.events) {
-    if (ev.name === 'exception' && code === undefined) code = ev.attributes?.['exception.type'];
-  }
   for (let i = s.events.length - 1; i >= 0; i--) {
     if (s.events[i].name === 'exception') s.events.splice(i, 1);
   }
   s.status = { code: SpanStatusCode.UNSET };
-  if (s.attributes['app.outcome'] === undefined) s.attributes['app.outcome'] = 'rejected';
-  if (typeof code === 'string' && code && s.attributes['app.reject.reason'] === undefined) {
-    s.attributes['app.reject.reason'] = code.toLowerCase();
-  }
 }
 
 /**
@@ -112,19 +106,41 @@ export class FastifyClientErrorProcessor implements SpanProcessor {
   }
 }
 
-function firstLine(v: unknown): string {
-  if (v instanceof Error) return `${v.name}: ${String(v.message).split('\n', 1)[0]}`;
-  if (typeof v === 'string') return v.split('\n', 1)[0];
-  if (v && typeof v === 'object') {
-    const o = v as { message?: unknown; code?: unknown };
-    if (typeof o.message === 'string') return `${o.code ? `${String(o.code)}: ` : ''}${o.message.split('\n', 1)[0]}`;
+/** Resumo de um erro/objeto: `código: mensagem` (1ª linha), nunca a stack nem o JSON inteiro. */
+function summarizeObject(o: Record<string, unknown>): string {
+  const code = typeof o.code === 'string' || typeof o.code === 'number' ? String(o.code) : '';
+  let msg = typeof o.message === 'string' ? o.message.split('\n', 1)[0].trim() : '';
+  // AggregateError (ECONNREFUSED em IPv4 + IPv6) vem com message vazia e os erros em `errors`.
+  if (!msg && o.errors !== undefined) {
+    const first = Array.isArray(o.errors) ? o.errors[0] : String(o.errors).split(',', 1)[0];
+    msg = first && typeof first === 'object' ? summarizeObject(first as Record<string, unknown>) : String(first ?? '').split('\n', 1)[0].trim();
+  }
+  // Sem message: só o cabeçalho da stack ("AggregateError [ECONNREFUSED]: "), nunca os frames.
+  if (!msg && typeof o.stack === 'string') msg = o.stack.split('\n', 1)[0].trim();
+  if (code && msg.includes(code)) return msg;
+  return code && msg ? `${code}: ${msg}` : code || msg || '[objeto]';
+}
+
+/** 1ª linha de uma mensagem do diag; JSON embutido (o exporter serializa o erro) vira só message/code. */
+export function firstLine(v: unknown): string {
+  if (v instanceof Error) {
+    const s = summarizeObject(v as unknown as Record<string, unknown>);
+    return s.startsWith(v.name) ? s : `${v.name}: ${s}`;
+  }
+  if (v && typeof v === 'object') return summarizeObject(v as Record<string, unknown>);
+  const str = String(v);
+  const at = str.indexOf('{');
+  if (at >= 0) {
+    const tail = str.slice(at);
+    const end = tail.lastIndexOf('}');
     try {
-      return JSON.stringify(v).split('\n', 1)[0].slice(0, 300);
+      const o = JSON.parse(end >= 0 ? tail.slice(0, end + 1) : tail);
+      if (o && typeof o === 'object') return `${str.slice(0, at)}${summarizeObject(o)}`.split('\n', 1)[0];
     } catch {
-      return '[objeto]';
+      /* não é JSON */
     }
   }
-  return String(v);
+  return str.split('\n', 1)[0];
 }
 
 /** Diag logger: 1ª linha da mensagem, no máximo 1 vez por intervalo por (nível + mensagem). */

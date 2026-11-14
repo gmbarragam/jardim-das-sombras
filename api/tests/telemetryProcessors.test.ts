@@ -5,7 +5,7 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
-import { FastifyClientErrorProcessor, ThrottledDiagLogger } from '../src/telemetryProcessors.js';
+import { FastifyClientErrorProcessor, ThrottledDiagLogger, firstLine } from '../src/telemetryProcessors.js';
 import { DomainError } from '../src/errors/DomainError.js';
 
 function setup() {
@@ -39,8 +39,11 @@ describe('FastifyClientErrorProcessor', () => {
       expect(s.events.some((e) => e.name === 'exception')).toBe(false);
       expect(JSON.stringify(s.attributes)).not.toContain('texto do usuário');
     }
-    const handler = spans.find((s) => s.name.startsWith('handler'))!;
-    expect(handler.attributes['app.reject.reason']).toBe('plant_not_found');
+    // Resultado só no span de negócio: os internos não entram no painel de rejeições.
+    for (const s of spans) {
+      expect(s.attributes['app.outcome']).toBeUndefined();
+      expect(s.attributes['app.reject.reason']).toBeUndefined();
+    }
   });
 
   it('5xx continua ERROR com exceção', () => {
@@ -78,5 +81,23 @@ describe('ThrottledDiagLogger', () => {
     log.error('{"stack":"Error: connect ECONNREFUSED\\n at x","message":"connect ECONNREFUSED"}\n  at y', err);
     expect(lines).toHaveLength(3);
     expect(lines[2]).toContain('+2 repetidas suprimidas');
+  });
+});
+
+describe('firstLine (diag)', () => {
+  it('JSON do exporter vira só code/message, sem stack', () => {
+    const json = JSON.stringify({
+      stack: 'AggregateError [ECONNREFUSED]: \n    at internalConnectMultiple (node:net:1122:18)',
+      errors: 'Error: connect ECONNREFUSED 192.0.2.1:4318,Error: connect ENETUNREACH ::1:4318',
+      code: 'ECONNREFUSED',
+      name: 'AggregateError',
+    });
+    const line = firstLine(json);
+    expect(line).toBe('Error: connect ECONNREFUSED 192.0.2.1:4318');
+    expect(line).not.toContain('stack');
+    expect(line).not.toContain(' at ');
+    expect(firstLine({ message: 'timeout', code: 'ETIMEDOUT', stack: 'Error: timeout\n at x' })).toBe('ETIMEDOUT: timeout');
+    expect(firstLine({ stack: 'AggregateError [ECONNREFUSED]: \n at x' })).toBe('AggregateError [ECONNREFUSED]:');
+    expect(firstLine('falha no export: {"message":"x","stack":"Error: x\\n at y"}')).toBe('falha no export: x');
   });
 });
