@@ -117,3 +117,15 @@ Todos os spans de negócio e os spans SERVER das rotas por usuário têm `jds.us
   HTTP/@fastify/otel.
 - Overhead medido (200 requisições sequenciais, local): rotas baratas (~3 ms) ganham ~0,6–1 ms; o render (~27 ms) ~+1,3 ms.
 - Sem logs via OTLP (só `trace_id` no stdout); sem Loki.
+
+## Identificar um usuário a partir de um trace (operador autorizado)
+
+Os spans só têm pseudônimos (`jds.user.id_hash`). Quem tem acesso à máquina e ao `OTEL_ID_SALT` usa a ferramenta da ravena-ai, que recalcula o HMAC localmente e consulta também este serviço (via `docker exec`):
+
+```bash
+cd ../ravena-ai
+python3 observability/tools/quem-e.py <id_hash>        # hash → ID (+ nome/apelido)
+python3 observability/tools/quem-e.py --id <ID>        # ID → hashes + links do Jaeger
+```
+
+O hash de um mesmo usuário é **igual nos 3 serviços**: usuário = ID sem sufixo, cortado no primeiro `@` e no primeiro `:`. Grupo = ID completo. O salt nunca é impresso. O resultado é dado pessoal e serve só para a investigação. Detalhes no `OBSERVABILITY.md` da ravena-ai, seção 4.
