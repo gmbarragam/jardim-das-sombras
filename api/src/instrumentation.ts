@@ -32,7 +32,8 @@ if (endpoint && !disabled) {
 }
 
 async function start(): Promise<void> {
-  const { diag, DiagConsoleLogger, DiagLogLevel } = await import('@opentelemetry/api');
+  const { diag, DiagLogLevel } = await import('@opentelemetry/api');
+  const { FastifyClientErrorProcessor, ThrottledDiagLogger } = await import('./telemetryProcessors.js');
   const { NodeSDK } = await import('@opentelemetry/sdk-node');
   const { resourceFromAttributes } = await import('@opentelemetry/resources');
   const { OTLPTraceExporter } = await import('@opentelemetry/exporter-trace-otlp-proto');
@@ -46,8 +47,9 @@ async function start(): Promise<void> {
   const { FastifyOtelInstrumentation } = await import('@fastify/otel');
 
   // Erros de export (collector fora do ar) só aparecem no diag logger, nunca derrubam o processo.
+  // Sem stack: 1ª linha da mensagem, no máximo 1x/minuto por tipo (ECONNREFUSED a cada export).
   const levelName = (process.env.OTEL_LOG_LEVEL || 'error').toUpperCase() as keyof typeof DiagLogLevel;
-  diag.setLogger(new DiagConsoleLogger(), DiagLogLevel[levelName] ?? DiagLogLevel.ERROR);
+  diag.setLogger(new ThrottledDiagLogger(), DiagLogLevel[levelName] ?? DiagLogLevel.ERROR);
 
   let version = 'unknown';
   try {
@@ -68,6 +70,8 @@ async function start(): Promise<void> {
     resource,
     // Fila limitada: se o collector cair, spans excedentes são descartados (nunca bloqueia).
     spanProcessors: [
+      // Antes do batch: 4xx de negócio no @fastify/otel deixam de ser ERROR (e perdem a mensagem).
+      new FastifyClientErrorProcessor(),
       new BatchSpanProcessor(new OTLPTraceExporter({ timeoutMillis: 10000 }), {
         maxQueueSize: 4096,
         maxExportBatchSize: 512,
