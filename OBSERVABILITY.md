@@ -39,7 +39,8 @@ Para desligar: apague `OTEL_EXPORTER_OTLP_ENDPOINT` ou defina `OTEL_SDK_DISABLED
 - Status de 4xx: o `@fastify/otel` marca `request` e `handler - *`/`preHandler - *` como ERROR (com a mensagem do erro)
   em todo erro lançado. O `FastifyClientErrorProcessor` (mesmo arquivo, antes do `BatchSpanProcessor`) corrige no
   `onEnd`: se o status HTTP do `request` é < 500, os filhos voltam para UNSET, o `request` vai para OK, a mensagem e o
-  evento `exception` são removidos e fica só `app.outcome=rejected` + `app.reject.reason=<código>`. 5xx continuam ERROR.
+  evento `exception` são removidos. 5xx continuam ERROR. `app.outcome`/`app.reject.reason` ficam só no span de
+  negócio (`farm plant`...), nunca no `request`/`handler - *` (senão cada rejeição contava 3x no painel de rejeições).
   OK (e não UNSET) no `request` porque ele é INTERNAL e carrega `http.response.status_code`: com UNSET o Jaeger v2
   infere ERROR para span não-SERVER com status ≥ 400.
 - Instrumentações: HTTP (server/client), undici (`fetch`), `@fastify/otel` (rotas com `http.route`; só o hook
@@ -80,7 +81,8 @@ nunca é gravada (pode conter texto do usuário, ex. `Planta desconhecida: "<tex
 | `canvas encode` | filho de `farm render` (só em miss): `toBuffer`, `jds.render.format`, `jds.render.bytes` |
 | `farm plant` | `jds.plant.random`, `jds.plant.count`, `jds.plant.id` (ID do catálogo) |
 | `farm harvest` | `jds.harvest.all`, `jds.harvest.items`, `jds.harvest.plant_types`, `jds.harvest.withered_cleared`, `jds.harvest.coins`, `jds.notify.attempted` (houve POST) ou `jds.notify.sent=false` + `jds.notify.skip_reason` (empty/disabled/no_key) |
-| `farm harvest tx` | transação interativa do Prisma (inclui BEGIN/COMMIT): `jds.harvest.slots_reset`, `jds.harvest.plant_types` |
+| `farm plant tx` | transação do plantio (inclui BEGIN/COMMIT): `jds.plant.count`; filhos `farm plant tx.begin`/`.write`/`.commit` |
+| `farm harvest tx` | transação interativa do Prisma (inclui BEGIN/COMMIT): `jds.harvest.slots_reset`, `jds.harvest.plant_types`; filhos `farm harvest tx.begin` (BEGIN), `.write` (corpo, com os `prisma *`) e `.commit` (COMMIT) — helper `withTxSpans` |
 | `notify harvest` | `jds.notify.status_code`, `jds.notify.sent` (true só em 2xx), `app.outcome` (ok / rejected em 4xx / error em 5xx ou falha de rede, com `error.type`), `jds.notify.plant_types`, `server.address` |
 | `farm daily` | `jds.daily.coins`, `jds.daily.items` |
 | `farm sell` | `jds.sell.all`, `jds.sell.items`, `jds.sell.coins` |

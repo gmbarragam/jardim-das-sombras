@@ -4,7 +4,7 @@ import { rollDailyBagCoins } from '../utils/economy.js';
 import { PLANTS, getBagPool, findPlant, DECORATIONS, findDecoration, CONSUMABLES, findConsumable } from '../utils/catalog.js';
 import { CanvasRendererService, isInsidePlantation } from './CanvasRendererService.js';
 import { BotNotifier } from './BotNotifier.js';
-import { withSpan } from '../telemetry.js';
+import { withSpan, withTxSpans } from '../telemetry.js';
 
 export interface HarvestResultItem {
   plantId: string;
@@ -358,7 +358,9 @@ export class FarmService {
 
     const witheredReplaced = targetSlots.filter((s) => s.stage === 'withered').length;
 
-    await this.prisma.$transaction(async (tx) => {
+    // Span da transação (BEGIN/COMMIT não aparecem nos `prisma *`), com filhos begin/write/commit.
+    await withSpan('farm plant tx', { outcome: false, attributes: { 'jds.plant.count': plantedCount } }, () =>
+      withTxSpans('farm plant tx', (inTx) => this.prisma.$transaction((tx) => inTx(async () => {
       await tx.inventory.update({
         where: { playerId_itemId: { playerId, itemId: plantDef.id } },
         data: { quantity: { decrement: plantedCount } },
@@ -384,7 +386,7 @@ export class FarmService {
           ...(witheredReplaced > 0 ? { totalWithered: { increment: witheredReplaced } } : {}),
         },
       });
-    });
+    }))));
 
     CanvasRendererService.clearRenderCache();
 
@@ -455,7 +457,7 @@ export class FarmService {
       'farm harvest tx',
       { outcome: false, attributes: { 'jds.harvest.slots_reset': allSlotsCount, 'jds.harvest.plant_types': Object.keys(harvestedMap).length } },
       () =>
-        this.prisma.$transaction(async (tx) => {
+        withTxSpans('farm harvest tx', (inTx) => this.prisma.$transaction((tx) => inTx(async () => {
           if (readySlots.length > 0 || witheredSlots.length > 0) {
             await tx.player.update({
               where: { id: playerId },
@@ -498,7 +500,7 @@ export class FarmService {
               },
             });
           }
-        }),
+        }))),
     );
 
     CanvasRendererService.clearRenderCache();
