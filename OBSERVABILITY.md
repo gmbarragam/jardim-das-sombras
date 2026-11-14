@@ -25,7 +25,7 @@ Para desligar: apague `OTEL_EXPORTER_OTLP_ENDPOINT` ou defina `OTEL_SDK_DISABLED
 | `OTEL_SERVICE_NAME` | `jardim-das-sombras` | `service.name` |
 | `OTEL_ID_SALT` | aleatório por processo | Segredo do HMAC que pseudonimiza o usuário (`jds.user.id_hash`). Igual nos 3 serviços para correlacionar |
 | `OTEL_SDK_DISABLED` | vazio | `true` força desligado |
-| `OTEL_LOG_LEVEL` | `error` | Nível do diag logger do SDK |
+| `OTEL_LOG_LEVEL` | `error` | Nível do diag logger do SDK (só a 1ª linha, no máximo 1x/min por tipo de mensagem) |
 | `OTEL_DEPLOYMENT_ENVIRONMENT` | `NODE_ENV` | `deployment.environment.name` |
 
 ## Como funciona
@@ -33,13 +33,22 @@ Para desligar: apague `OTEL_EXPORTER_OTLP_ENDPOINT` ou defina `OTEL_SDK_DISABLED
 - `api/src/instrumentation.ts` é carregado antes do servidor (`node --import ./dist/instrumentation.js dist/server.js`,
   no `CMD` do Dockerfile e no `npm start`). Sem endpoint, retorna sem importar nada do SDK.
 - Falhas no bootstrap só geram `console.warn`. Collector fora do ar: o export falha em segundo plano
-  (timeout 10 s, fila de 4096 spans que descarta o excedente) e as requisições não atrasam.
+  (timeout 10 s, fila de 4096 spans que descarta o excedente) e as requisições não atrasam. O diag logger
+  (`ThrottledDiagLogger` em `api/src/telemetryProcessors.ts`) imprime só a 1ª linha (sem stack) e repete cada tipo
+  de mensagem no máximo 1x por minuto, com a contagem das suprimidas.
+- Status de 4xx: o `@fastify/otel` marca `request` e `handler - *`/`preHandler - *` como ERROR (com a mensagem do erro)
+  em todo erro lançado. O `FastifyClientErrorProcessor` (mesmo arquivo, antes do `BatchSpanProcessor`) corrige no
+  `onEnd`: se o status HTTP do `request` é < 500, os filhos voltam para UNSET, o `request` vai para OK, a mensagem e o
+  evento `exception` são removidos e fica só `app.outcome=rejected` + `app.reject.reason=<código>`. 5xx continuam ERROR.
+  OK (e não UNSET) no `request` porque ele é INTERNAL e carrega `http.response.status_code`: com UNSET o Jaeger v2
+  infere ERROR para span não-SERVER com status ≥ 400.
 - Instrumentações: HTTP (server/client), undici (`fetch`), `@fastify/otel` (rotas com `http.route`; só o hook
   `preHandler` vira span), pino (`trace_id`/`span_id` nos logs JSON do Fastify), runtime do Node (event loop, heap, GC).
 - Prisma: spans manuais `prisma {Model}.{operação}` (CLIENT) via `$extends`. O `@prisma/instrumentation` 5.22
   depende do SDK 1.x e quebra o processo com o SDK 2.x, por isso não é usado (nem `previewFeatures = ["tracing"]`).
-- Propagação W3C `traceparent`: chamadas da ravena-ai continuam o mesmo trace; o aviso de colheita
-  (`POST /api/games/fazenda/harvest`) é um span CLIENT filho de `farm harvest` e continua na ravena-ai.
+- Propagação W3C `traceparent`: chamadas da ravena-ai continuam o mesmo trace; o aviso de colheita vira o span
+  `notify harvest` (filho de `farm harvest`, termina depois dele porque é fire-and-forget) com o CLIENT
+  `POST /api/games/fazenda/harvest` dentro, que continua na ravena-ai.
 - Helpers em `api/src/telemetry.ts` (`withSpan`, `setAttrs`, `addEvent`, `recordError`, `hashId`, `isEnabled`).
 
 ## Privacidade
@@ -56,13 +65,19 @@ Para desligar: apague `OTEL_EXPORTER_OTLP_ENDPOINT` ou defina `OTEL_SDK_DISABLED
 
 Atributos comuns aos 3 serviços: `app.outcome` = `ok` | `rejected` | `error` e `app.reject.reason` (código do
 `DomainError` em minúsculas, ex. `insufficient_coins`, `not_ready_for_harvest`, `daily_already_claimed`).
-Rejeição de negócio **não** marca o span como ERROR; exceção inesperada marca (`error.type` + exceção).
+Rejeição de negócio **não** marca span nenhum como ERROR (nem os do `@fastify/otel`) e a mensagem do `DomainError`
+nunca é gravada (pode conter texto do usuário, ex. `Planta desconhecida: "<texto>"`); exceção inesperada marca
+(`error.type` + exceção).
 
 | Span | Atributos |
 |---|---|
-| `farm render` | `jds.render.kind` = farm/share/badge, `jds.render.cache` = hit/miss, `jds.render.bytes`, `jds.render.draw_ms`, `jds.render.encode_ms` |
+| `farm render` | `jds.render.kind` = farm/share/badge, `jds.render.cache` = hit/miss, `jds.render.format` = jpeg/png, `jds.render.bytes`, `jds.render.draw_ms`, `jds.render.encode_ms` |
+| `canvas draw` | filho de `farm render` (só em miss): composição no canvas |
+| `canvas encode` | filho de `farm render` (só em miss): `toBuffer`, `jds.render.format`, `jds.render.bytes` |
 | `farm plant` | `jds.plant.random`, `jds.plant.count`, `jds.plant.id` (ID do catálogo) |
-| `farm harvest` | `jds.harvest.all`, `jds.harvest.items`, `jds.harvest.plant_types`, `jds.harvest.withered_cleared`, `jds.harvest.coins`, `jds.notify.sent`, `jds.notify.skip_reason` |
+| `farm harvest` | `jds.harvest.all`, `jds.harvest.items`, `jds.harvest.plant_types`, `jds.harvest.withered_cleared`, `jds.harvest.coins`, `jds.notify.attempted` (houve POST) ou `jds.notify.sent=false` + `jds.notify.skip_reason` (empty/disabled/no_key) |
+| `farm harvest tx` | transação interativa do Prisma (inclui BEGIN/COMMIT): `jds.harvest.slots_reset`, `jds.harvest.plant_types` |
+| `notify harvest` | `jds.notify.status_code`, `jds.notify.sent` (true só em 2xx), `app.outcome` (ok / rejected em 4xx / error em 5xx ou falha de rede, com `error.type`), `jds.notify.plant_types`, `server.address` |
 | `farm daily` | `jds.daily.coins`, `jds.daily.items` |
 | `farm sell` | `jds.sell.all`, `jds.sell.items`, `jds.sell.coins` |
 | `farm use` | — |
@@ -76,17 +91,23 @@ Todos os spans de negócio têm `jds.user.id_hash`.
 ## Consultas prontas no Jaeger (http://localhost:16686, serviço `jardim-das-sombras`)
 
 - Renders lentos: operação `farm render`, tags `jds.render.cache=miss`, Min Duration `50ms`.
-- Encode bloqueando o event loop: `farm render` com `jds.render.kind=farm` e ordenar por duração; compare `jds.render.encode_ms`.
+- Encode bloqueando o event loop: operação `canvas encode` (tag `jds.render.format=jpeg`) ordenada por duração.
 - Rejeições: tags `app.outcome=rejected` (ou `app.reject.reason=insufficient_coins`).
 - Erros reais: tags `error=true`.
-- Colheita → bot: operação `farm harvest`, tag `jds.notify.sent=true` (o trace segue para `ravena-ai`).
+- Colheita → bot: operação `notify harvest`, tag `jds.notify.sent=true` (o trace segue para `ravena-ai`);
+  aviso recusado pela ravena: `notify harvest` com `jds.notify.sent=false` (ver `jds.notify.status_code`).
 - Um jogador: tag `jds.user.id_hash=<hash>` (calcule com o mesmo `OTEL_ID_SALT`).
 - Correlacionar log: `docker logs jardim-api | grep <trace_id>`.
 
 ## Limitações
 
-- `canvas.toBuffer` é síncrono: o span mostra o custo (`encode_ms`), mas não o reduz. No @napi-rs/canvas o desenho é
-  adiado e quase todo o custo aparece no encode (`draw_ms` fica perto de 0).
+- `canvas.toBuffer` é síncrono: o span `canvas encode` mostra o custo, mas não o reduz. No @napi-rs/canvas o desenho
+  é adiado e quase todo o custo aparece no encode (`canvas draw` fica perto de 0–3 ms).
+- A correção de status 4xx muda o objeto do span já entregue ao batch (os filhos terminam antes do `request`). O
+  batch exporta a cada 2 s, então na prática a correção chega antes; num export disparado exatamente nesse
+  intervalo de microssegundos (fila com 512 spans), um `handler - *` poderia sair ainda como ERROR.
+- Em 4xx do `@fastify/otel` sem `DomainError` (ex.: 404 de rota, JSON inválido), o código vem do `exception.type`
+  (ex. `fst_err_ctp_invalid_json_body`).
 - O `setErrorHandler` do `server.ts` é definido depois do registro dos plugins de rota, então hoje ele não é
   aplicado a essas rotas (comportamento já existente, não alterado). 5xx nelas aparecem como erro pelos spans
   HTTP/@fastify/otel.
