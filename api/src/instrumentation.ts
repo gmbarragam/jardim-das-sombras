@@ -96,6 +96,9 @@ async function start(): Promise<void> {
             span.setAttribute('url.path', sanitizePath(p));
             if (q) span.setAttribute('url.query', sanitizeQuery(q));
           }
+          // Guarda o span SERVER no IncomingMessage: o hook global do server.ts grava nele o hash
+          // do usuário (telemetry.ts → setRequestAttrs).
+          if ((span as unknown as { kind?: number }).kind === 1) (req as unknown as Record<symbol, unknown>)[Symbol.for('ravena.otel.server_span')] = span;
         },
       }),
       new UndiciInstrumentation({

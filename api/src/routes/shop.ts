@@ -2,7 +2,7 @@ import { FastifyPluginAsync } from 'fastify';
 import { ShopService } from '../services/ShopService.js';
 import { CanvasRendererService } from '../services/CanvasRendererService.js';
 import { requireAuth } from '../plugins/auth.js';
-import { withSpan, setAttrs, hashId } from '../telemetry.js';
+import { withSpan, setAttrs, hashUserId } from '../telemetry.js';
 
 export const shopRoutes: FastifyPluginAsync = async (fastify) => {
   const shopService = new ShopService(fastify.prisma);
@@ -25,7 +25,7 @@ export const shopRoutes: FastifyPluginAsync = async (fastify) => {
       const quantity = req.body.quantity || 1;
       const result = await withSpan(
         'shop buy',
-        { attributes: { 'jds.user.id_hash': hashId(req.params.user_id), 'jds.shop.quantity': quantity } },
+        { attributes: { 'jds.user.id_hash': hashUserId(req.params.user_id), 'jds.shop.quantity': quantity } },
         async () => {
           const r = await shopService.buy(req.params.user_id, req.body.itemId, quantity);
           setAttrs({ 'jds.shop.item_id': r.itemId, 'jds.shop.cost': r.totalCost });

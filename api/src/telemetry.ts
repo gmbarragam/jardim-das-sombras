@@ -5,7 +5,7 @@
  * (tracer no-op; hashId devolve undefined sem calcular HMAC).
  *
  * Privacidade (ver OBSERVABILITY.md): NUNCA passar para atributos/eventos ID cru de usuário,
- * nome de jogador/fazenda, textos livres ou segredos. Usuário só via hashId() → `jds.user.id_hash`.
+ * nome de jogador/fazenda, textos livres ou segredos. Usuário só via hashUserId() → `jds.user.id_hash`.
  */
 import crypto from 'node:crypto';
 import {
@@ -49,6 +49,75 @@ export function isEnabled(): boolean {
 export function hashId(id: unknown): string | undefined {
   if (!isEnabled() || id === undefined || id === null || id === '') return undefined;
   return crypto.createHmac('sha256', ID_SALT).update(String(id)).digest('hex').slice(0, 16);
+}
+
+/**
+ * Forma canônica do ID de pessoa para o HMAC, IGUAL à da ravena-ai (src/telemetry/index.js →
+ * hashUserId): tira o sufixo `@c.us`/`@lid`/`@s.whatsapp.net` e o `:device`. Idempotente.
+ * A ravena já manda só dígitos ao JDS; a normalização garante o mesmo hash se isso mudar e
+ * permite a um operador com o OTEL_ID_SALT recomputar o hash localmente.
+ */
+export function normalizeUserId(id: unknown): string | undefined {
+  if (id === undefined || id === null || id === '') return undefined;
+  const raw = String(id);
+  return raw.split('@')[0].split(':')[0] || raw;
+}
+
+/** hashId da forma canônica do usuário (ver normalizeUserId). Use sempre este para pessoas. */
+export function hashUserId(id: unknown): string | undefined {
+  return hashId(normalizeUserId(id));
+}
+
+const kServerSpan = Symbol.for('ravena.otel.server_span');
+
+/**
+ * Grava atributos nos spans da requisição HTTP de entrada: o SERVER (`GET /farm/:user_id`, guardado
+ * pelo requestHook do instrumentation.ts) e o `request` do @fastify/otel. Para rotas sem span de negócio.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function setRequestAttrs(request: any, attrs: AttrInput): void {
+  if (!isEnabled() || !request) return;
+  const clean = cleanAttrs(attrs);
+  if (!clean || Object.keys(clean).length === 0) return;
+  const spans = new Set<Span>();
+  const server = request.raw?.[kServerSpan] as Span | undefined;
+  if (server) spans.add(server);
+  try {
+    const reqSpan = typeof request.opentelemetry === 'function' ? (request.opentelemetry().span as Span | undefined) : undefined;
+    if (reqSpan) spans.add(reqSpan);
+  } catch {
+    /* sem @fastify/otel */
+  }
+  for (const s of spans) if (s.isRecording()) s.setAttributes(clean);
+}
+
+function pick(keys: string[], ...sources: unknown[]): unknown {
+  for (const src of sources) {
+    if (!src || typeof src !== 'object') continue;
+    for (const key of keys) {
+      const v = (src as Record<string, unknown>)[key];
+      if (typeof v === 'string' || typeof v === 'number') return v;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Hook global (preValidation, depois do parse do corpo): `user_id`/`userId` de params, corpo ou query
+ * vira `jds.user.id_hash`; `fromUserId`/`toUserId` (transferência) viram `jds.from_user.id_hash`/`jds.to_user.id_hash`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function tagRequestIds(request: any): void {
+  if (!isEnabled() || !request) return;
+  const user = pick(['user_id', 'userId'], request.params, request.body, request.query);
+  const from = pick(['fromUserId'], request.body);
+  const to = pick(['toUserId'], request.body);
+  if (user === undefined && from === undefined && to === undefined) return;
+  setRequestAttrs(request, {
+    'jds.user.id_hash': hashUserId(user),
+    'jds.from_user.id_hash': hashUserId(from),
+    'jds.to_user.id_hash': hashUserId(to),
+  });
 }
 
 function cleanAttrs(attrs?: AttrInput): Attributes | undefined {

@@ -49,12 +49,16 @@ Para desligar: apague `OTEL_EXPORTER_OTLP_ENDPOINT` ou defina `OTEL_SDK_DISABLED
 - Propagação W3C `traceparent`: chamadas da ravena-ai continuam o mesmo trace; o aviso de colheita vira o span
   `notify harvest` (filho de `farm harvest`, termina depois dele porque é fire-and-forget) com o CLIENT
   `POST /api/games/fazenda/harvest` dentro, que continua na ravena-ai.
-- Helpers em `api/src/telemetry.ts` (`withSpan`, `setAttrs`, `addEvent`, `recordError`, `hashId`, `isEnabled`).
+- Helpers em `api/src/telemetry.ts` (`withSpan`, `setAttrs`, `addEvent`, `recordError`, `hashUserId`, `hashId`, `setRequestAttrs`, `isEnabled`).
 
 ## Privacidade
 
 - Nunca vão para spans: ID cru de usuário, nome de jogador/fazenda, textos livres, tokens, headers.
-- Usuário só como `jds.user.id_hash` = HMAC-SHA256(`OTEL_ID_SALT`, id), 16 hex.
+- Usuário só como `jds.user.id_hash` = HMAC-SHA256(`OTEL_ID_SALT`, id normalizado), 16 hex, via `hashUserId`.
+  Normalização igual à da ravena-ai: corta no primeiro `@` e no primeiro `:` (`5511…@c.us`, `5511…:3@s.whatsapp.net`
+  e `5511…` dão o mesmo hash). Transferência: `jds.from_user.id_hash`/`jds.to_user.id_hash`.
+- Hook global `preValidation` (server.ts) grava o hash de `user_id`/`userId` (params, corpo ou query) no span
+  SERVER e no `request` de toda rota; rotas por UUID (`/farm/share/image`, `/farm?id=`) gravam após a busca.
 - `url.path`: segmentos com ≥ 6 dígitos ou `@` viram `{id}` (a rota parametrizada fica em `http.route`).
 - `url.query`: só parâmetros de render (`format`, `tooltips`, `planted_slots`...) mantêm o valor; `token`, `id`,
   `user_id`, `user_name`, `key`, `apiKey`, `auth` etc. viram `REDACTED`.
@@ -86,7 +90,7 @@ nunca é gravada (pode conter texto do usuário, ex. `Planta desconhecida: "<tex
 | `inventory get` | `jds.inventory.found`, `jds.inventory.items` |
 | `prisma {Model}.{op}` | `db.system.name`, `db.operation.name`, `db.collection.name` |
 
-Todos os spans de negócio têm `jds.user.id_hash`.
+Todos os spans de negócio e os spans SERVER das rotas por usuário têm `jds.user.id_hash`.
 
 ## Consultas prontas no Jaeger (http://localhost:16686, serviço `jardim-das-sombras`)
 
