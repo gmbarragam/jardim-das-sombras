@@ -2,12 +2,13 @@
  * Helpers de tracing de negócio do Jardim das Sombras (mesma API do src/telemetry/index.js da ravena-ai).
  *
  * Só depende de @opentelemetry/api: com a telemetria desligada tudo vira no-op barato
- * (tracer no-op; hashId devolve undefined sem calcular HMAC).
+ * (tracer no-op; userIdAttr devolve undefined).
  *
- * Privacidade (ver OBSERVABILITY.md): NUNCA passar para atributos/eventos ID cru de usuário,
- * nome de jogador/fazenda, textos livres ou segredos. Usuário só via hashUserId() → `jds.user.id_hash`.
+ * Privacidade (ver OBSERVABILITY.md): o jogador entra como ID (telefone/ID da plataforma) SÓ via
+ * userIdAttr(), nos atributos jds.user.id / jds.from_user.id / jds.to_user.id. NUNCA passar nome de
+ * jogador/fazenda, textos livres ou segredos. Por isso a stack de observabilidade não pode ficar
+ * exposta fora do host (ver OBSERVABILITY.md da ravena-ai, "Segurança").
  */
-import crypto from 'node:crypto';
 import {
   trace,
   context,
@@ -27,8 +28,6 @@ export type { Span };
 
 export const tracer = trace.getTracer('jardim-das-sombras');
 
-const ID_SALT = process.env.OTEL_ID_SALT || crypto.randomBytes(32).toString('hex');
-
 type AttrInput = Record<string, AttributeValue | object | null | undefined>;
 
 export interface SpanOptions {
@@ -45,17 +44,10 @@ export function isEnabled(): boolean {
   return (globalThis as Record<string, unknown>).__OTEL_ENABLED === true;
 }
 
-/** Pseudônimo estável (HMAC-SHA256 truncado em 16 hex) para IDs de usuário. undefined se desligado. */
-export function hashId(id: unknown): string | undefined {
-  if (!isEnabled() || id === undefined || id === null || id === '') return undefined;
-  return crypto.createHmac('sha256', ID_SALT).update(String(id)).digest('hex').slice(0, 16);
-}
-
 /**
- * Forma canônica do ID de pessoa para o HMAC, IGUAL à da ravena-ai (src/telemetry/index.js →
- * hashUserId): tira o sufixo `@c.us`/`@lid`/`@s.whatsapp.net` e o `:device`. Idempotente.
- * A ravena já manda só dígitos ao JDS; a normalização garante o mesmo hash se isso mudar e
- * permite a um operador com o OTEL_ID_SALT recomputar o hash localmente.
+ * Forma canônica do ID de pessoa, IGUAL à da ravena-ai (src/telemetry/index.js → userIdAttr):
+ * tira o sufixo `@c.us`/`@lid`/`@s.whatsapp.net` e o `:device`. Idempotente. Assim `5511…@c.us`,
+ * `5511…` e `5511…:3@s.whatsapp.net` viram o mesmo valor nos 3 serviços.
  */
 export function normalizeUserId(id: unknown): string | undefined {
   if (id === undefined || id === null || id === '') return undefined;
@@ -63,9 +55,10 @@ export function normalizeUserId(id: unknown): string | undefined {
   return raw.split('@')[0].split(':')[0] || raw;
 }
 
-/** hashId da forma canônica do usuário (ver normalizeUserId). Use sempre este para pessoas. */
-export function hashUserId(id: unknown): string | undefined {
-  return hashId(normalizeUserId(id));
+/** ID do usuário na forma canônica (ver normalizeUserId). undefined se desligado ou vazio. */
+export function userIdAttr(id: unknown): string | undefined {
+  if (!isEnabled()) return undefined;
+  return normalizeUserId(id);
 }
 
 const kServerSpan = Symbol.for('ravena.otel.server_span');
@@ -104,7 +97,7 @@ function pick(keys: string[], ...sources: unknown[]): unknown {
 
 /**
  * Hook global (preValidation, depois do parse do corpo): `user_id`/`userId` de params, corpo ou query
- * vira `jds.user.id_hash`; `fromUserId`/`toUserId` (transferência) viram `jds.from_user.id_hash`/`jds.to_user.id_hash`.
+ * vira `jds.user.id`; `fromUserId`/`toUserId` (transferência) viram `jds.from_user.id`/`jds.to_user.id`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function tagRequestIds(request: any): void {
@@ -114,9 +107,9 @@ export function tagRequestIds(request: any): void {
   const to = pick(['toUserId'], request.body);
   if (user === undefined && from === undefined && to === undefined) return;
   setRequestAttrs(request, {
-    'jds.user.id_hash': hashUserId(user),
-    'jds.from_user.id_hash': hashUserId(from),
-    'jds.to_user.id_hash': hashUserId(to),
+    'jds.user.id': userIdAttr(user),
+    'jds.from_user.id': userIdAttr(from),
+    'jds.to_user.id': userIdAttr(to),
   });
 }
 

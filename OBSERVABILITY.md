@@ -6,12 +6,11 @@ A telemetria é **opcional**: sem endpoint configurado nada do SDK é carregado 
 
 ## Como ligar
 
-1. Suba o stack: `cd ../ravena-ai/observability && docker compose up -d` (Jaeger UI em http://localhost:16686).
+1. Suba o stack da ravena-ai: `cd ../ravena-ai && docker compose -f observability/docker-compose.yml up -d` (Jaeger UI em http://localhost:16686). Antes, crie `observability/.env` a partir do `.env.example` (senha do Grafana e, no Linux, `OTEL_BIND_ADDR=172.17.0.1`). Veja "Segurança" no `OBSERVABILITY.md` da ravena-ai: os traces têm o ID do jogador e a stack não pode ficar exposta.
 2. No `.env` da raiz deste repo (o compose repassa para o container `api`):
 
    ```env
    OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318
-   OTEL_ID_SALT=<o mesmo segredo usado na ravena-ai e no waifuletes>
    ```
 3. `docker compose up -d --build api`. No log deve aparecer `[otel] telemetria ligada → ...`.
 
@@ -23,7 +22,6 @@ Para desligar: apague `OTEL_EXPORTER_OTLP_ENDPOINT` ou defina `OTEL_SDK_DISABLED
 |---|---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | vazio (desligado) | Endpoint OTLP/HTTP do collector |
 | `OTEL_SERVICE_NAME` | `jardim-das-sombras` | `service.name` |
-| `OTEL_ID_SALT` | aleatório por processo | Segredo do HMAC que pseudonimiza o usuário (`jds.user.id_hash`). Igual nos 3 serviços para correlacionar |
 | `OTEL_SDK_DISABLED` | vazio | `true` força desligado |
 | `OTEL_LOG_LEVEL` | `error` | Nível do diag logger do SDK (só a 1ª linha, no máximo 1x/min por tipo de mensagem) |
 | `OTEL_DEPLOYMENT_ENVIRONMENT` | `NODE_ENV` | `deployment.environment.name` |
@@ -50,15 +48,16 @@ Para desligar: apague `OTEL_EXPORTER_OTLP_ENDPOINT` ou defina `OTEL_SDK_DISABLED
 - Propagação W3C `traceparent`: chamadas da ravena-ai continuam o mesmo trace; o aviso de colheita vira o span
   `notify harvest` (filho de `farm harvest`, termina depois dele porque é fire-and-forget) com o CLIENT
   `POST /api/games/fazenda/harvest` dentro, que continua na ravena-ai.
-- Helpers em `api/src/telemetry.ts` (`withSpan`, `setAttrs`, `addEvent`, `recordError`, `hashUserId`, `hashId`, `setRequestAttrs`, `isEnabled`).
+- Helpers em `api/src/telemetry.ts` (`withSpan`, `setAttrs`, `addEvent`, `recordError`, `userIdAttr`, `setRequestAttrs`, `isEnabled`).
 
 ## Privacidade
 
-- Nunca vão para spans: ID cru de usuário, nome de jogador/fazenda, textos livres, tokens, headers.
-- Usuário só como `jds.user.id_hash` = HMAC-SHA256(`OTEL_ID_SALT`, id normalizado), 16 hex, via `hashUserId`.
-  Normalização igual à da ravena-ai: corta no primeiro `@` e no primeiro `:` (`5511…@c.us`, `5511…:3@s.whatsapp.net`
-  e `5511…` dão o mesmo hash). Transferência: `jds.from_user.id_hash`/`jds.to_user.id_hash`.
-- Hook global `preValidation` (server.ts) grava o hash de `user_id`/`userId` (params, corpo ou query) no span
+- Nunca vão para spans: nome de jogador/fazenda, textos livres, tokens, headers.
+- O jogador entra como ID (telefone/ID da plataforma) em `jds.user.id`, via `userIdAttr`, para poder investigar
+  um caso. Normalização igual à da ravena-ai: corta no primeiro `@` e no primeiro `:` (`5511…@c.us`,
+  `5511…:3@s.whatsapp.net` e `5511…` viram `5511…`). Transferência: `jds.from_user.id`/`jds.to_user.id`.
+  Por isso a stack de observabilidade só pode ficar acessível no próprio host.
+- Hook global `preValidation` (server.ts) grava o ID de `user_id`/`userId` (params, corpo ou query) no span
   SERVER e no `request` de toda rota; rotas por UUID (`/farm/share/image`, `/farm?id=`) gravam após a busca.
 - `url.path`: segmentos com ≥ 6 dígitos ou `@` viram `{id}` (a rota parametrizada fica em `http.route`).
 - `url.query`: só parâmetros de render (`format`, `tooltips`, `planted_slots`...) mantêm o valor; `token`, `id`,
@@ -92,7 +91,7 @@ nunca é gravada (pode conter texto do usuário, ex. `Planta desconhecida: "<tex
 | `inventory get` | `jds.inventory.found`, `jds.inventory.items` |
 | `prisma {Model}.{op}` | `db.system.name`, `db.operation.name`, `db.collection.name` |
 
-Todos os spans de negócio e os spans SERVER das rotas por usuário têm `jds.user.id_hash`.
+Todos os spans de negócio e os spans SERVER das rotas por usuário têm `jds.user.id`.
 
 ## Consultas prontas no Jaeger (http://localhost:16686, serviço `jardim-das-sombras`)
 
@@ -102,7 +101,7 @@ Todos os spans de negócio e os spans SERVER das rotas por usuário têm `jds.us
 - Erros reais: tags `error=true`.
 - Colheita → bot: operação `notify harvest`, tag `jds.notify.sent=true` (o trace segue para `ravena-ai`);
   aviso recusado pela ravena: `notify harvest` com `jds.notify.sent=false` (ver `jds.notify.status_code`).
-- Um jogador: tag `jds.user.id_hash=<hash>` (calcule com o mesmo `OTEL_ID_SALT`).
+- Um jogador: tag `jds.user.id=5511999999999` (mesmo valor de `ravena.user.id` na ravena-ai).
 - Correlacionar log: `docker logs jardim-api | grep <trace_id>`.
 
 ## Limitações
@@ -119,15 +118,3 @@ Todos os spans de negócio e os spans SERVER das rotas por usuário têm `jds.us
   HTTP/@fastify/otel.
 - Overhead medido (200 requisições sequenciais, local): rotas baratas (~3 ms) ganham ~0,6–1 ms; o render (~27 ms) ~+1,3 ms.
 - Sem logs via OTLP (só `trace_id` no stdout); sem Loki.
-
-## Identificar um usuário a partir de um trace (operador autorizado)
-
-Os spans só têm pseudônimos (`jds.user.id_hash`). Quem tem acesso à máquina e ao `OTEL_ID_SALT` usa a ferramenta da ravena-ai, que recalcula o HMAC localmente e consulta também este serviço (via `docker exec`):
-
-```bash
-cd ../ravena-ai
-python3 observability/tools/quem-e.py <id_hash>        # hash → ID (+ nome/apelido)
-python3 observability/tools/quem-e.py --id <ID>        # ID → hashes + links do Jaeger
-```
-
-O hash de um mesmo usuário é **igual nos 3 serviços**: usuário = ID sem sufixo, cortado no primeiro `@` e no primeiro `:`. Grupo = ID completo. O salt nunca é impresso. O resultado é dado pessoal e serve só para a investigação. Detalhes no `OBSERVABILITY.md` da ravena-ai, seção 4.

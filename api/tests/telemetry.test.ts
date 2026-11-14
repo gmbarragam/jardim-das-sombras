@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { sanitizePath, sanitizeQuery } from '../src/telemetryUrl.js';
-import { withSpan, hashId, isEnabled } from '../src/telemetry.js';
+import { withSpan, userIdAttr, isEnabled } from '../src/telemetry.js';
 import { DomainError } from '../src/errors/DomainError.js';
 
 describe('telemetryUrl', () => {
@@ -21,7 +21,7 @@ describe('telemetryUrl', () => {
 describe('telemetry (desligada)', () => {
   it('é no-op e repassa resultado/erros', async () => {
     expect(isEnabled()).toBe(false);
-    expect(hashId('123')).toBeUndefined();
+    expect(userIdAttr('123')).toBeUndefined();
     expect(await withSpan('x', {}, async () => 42)).toBe(42);
     await expect(
       withSpan('x', {}, async () => {

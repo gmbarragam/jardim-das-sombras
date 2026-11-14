@@ -17,7 +17,7 @@ import {
   renderPublicFarmNotFound,
 } from './views/publicFarmView.js';
 import { renderCalibrateHtml } from './views/calibrateView.js';
-import { withSpan, setAttrs, hashUserId, markRejected, setRequestAttrs } from '../telemetry.js';
+import { withSpan, setAttrs, userIdAttr, markRejected, setRequestAttrs } from '../telemetry.js';
 
 export const farmRoutes: FastifyPluginAsync = async (fastify) => {
   const farmService = new FarmService(fastify.prisma);
@@ -264,7 +264,7 @@ export const farmRoutes: FastifyPluginAsync = async (fastify) => {
 
       const status = await farmService.getFarmStatusByUuid(uuid);
       // Rota por UUID público: o dono só é conhecido depois da busca.
-      setRequestAttrs(req, { 'jds.user.id_hash': hashUserId(status.playerId) });
+      setRequestAttrs(req, { 'jds.user.id': userIdAttr(status.playerId) });
       const withTooltips =
         req.query.tooltips === 'false' || req.query.tooltips === '0' || req.query.include_tooltips === 'false' || req.query.include_tooltips === '0'
           ? false
@@ -440,7 +440,7 @@ export const farmRoutes: FastifyPluginAsync = async (fastify) => {
 
       try {
         const status = await farmService.getFarmStatusByUuid(uuid);
-        setRequestAttrs(req, { 'jds.user.id_hash': hashUserId(status.playerId) });
+        setRequestAttrs(req, { 'jds.user.id': userIdAttr(status.playerId) });
 
         // Parse cookie se disponível
         const cookieHeader = req.headers.cookie || '';
@@ -492,7 +492,7 @@ export const farmRoutes: FastifyPluginAsync = async (fastify) => {
     async (req, reply) => {
       const result = await withSpan(
         'farm plant',
-        { attributes: { 'jds.user.id_hash': hashUserId(req.params.user_id), 'jds.plant.random': req.body?.random === true } },
+        { attributes: { 'jds.user.id': userIdAttr(req.params.user_id), 'jds.plant.random': req.body?.random === true } },
         async () => {
           const r = await farmService.plant(req.params.user_id, req.body);
           setAttrs({ 'jds.plant.count': r.plantedCount, 'jds.plant.id': r.plantId });
@@ -513,7 +513,7 @@ export const farmRoutes: FastifyPluginAsync = async (fastify) => {
     async (req, reply) => {
       const result = await withSpan(
         'farm harvest',
-        { attributes: { 'jds.user.id_hash': hashUserId(req.params.user_id), 'jds.harvest.all': req.body?.all === true } },
+        { attributes: { 'jds.user.id': userIdAttr(req.params.user_id), 'jds.harvest.all': req.body?.all === true } },
         async () => {
           // jds.notify.sent é definido pelo BotNotifier (o POST à ravena vira span CLIENT filho deste).
           const r = await farmService.harvest(req.params.user_id, req.body || {});
@@ -547,7 +547,7 @@ export const farmRoutes: FastifyPluginAsync = async (fastify) => {
     '/farm/:user_id/daily',
     { preHandler: [requireAuth] },
     async (req, reply) => {
-      const result = await withSpan('farm daily', { attributes: { 'jds.user.id_hash': hashUserId(req.params.user_id) } }, async (span) => {
+      const result = await withSpan('farm daily', { attributes: { 'jds.user.id': userIdAttr(req.params.user_id) } }, async (span) => {
         const r: any = await farmService.claimDaily(req.params.user_id);
         // "Já coletado hoje" volta 200 com alreadyClaimed=true (não é exceção): rejeição de negócio.
         if (r?.alreadyClaimed) markRejected(span, 'daily_already_claimed');
@@ -568,7 +568,7 @@ export const farmRoutes: FastifyPluginAsync = async (fastify) => {
     async (req, reply) => {
       const result = await withSpan(
         'farm decorate',
-        { attributes: { 'jds.user.id_hash': hashUserId(req.params.user_id), 'jds.decorate.op': 'equip' } },
+        { attributes: { 'jds.user.id': userIdAttr(req.params.user_id), 'jds.decorate.op': 'equip' } },
         () => farmService.equipDecoration(req.params.user_id, req.body),
       );
       return reply.send(result);
@@ -604,7 +604,7 @@ export const farmRoutes: FastifyPluginAsync = async (fastify) => {
         'farm decorate',
         {
           attributes: {
-            'jds.user.id_hash': hashUserId(req.params.user_id),
+            'jds.user.id': userIdAttr(req.params.user_id),
             'jds.decorate.op': 'batch',
             'jds.decorate.count': req.body?.decorations?.length ?? 0,
           },
@@ -624,7 +624,7 @@ export const farmRoutes: FastifyPluginAsync = async (fastify) => {
     async (req, reply) => {
       const result = await withSpan(
         'farm decorate',
-        { attributes: { 'jds.user.id_hash': hashUserId(req.params.user_id), 'jds.decorate.op': 'unequip' } },
+        { attributes: { 'jds.user.id': userIdAttr(req.params.user_id), 'jds.decorate.op': 'unequip' } },
         () => farmService.unequipDecoration(req.params.user_id, parseInt(req.params.slot_index)),
       );
       return reply.send(result);
@@ -671,7 +671,7 @@ export const farmRoutes: FastifyPluginAsync = async (fastify) => {
       }
       const result = await withSpan(
         'farm use',
-        { attributes: { 'jds.user.id_hash': hashUserId(req.params.user_id) } },
+        { attributes: { 'jds.user.id': userIdAttr(req.params.user_id) } },
         () => farmService.useConsumable(req.params.user_id, itemId, { slot }),
       );
       return reply.send(result);
@@ -688,7 +688,7 @@ export const farmRoutes: FastifyPluginAsync = async (fastify) => {
     async (req, reply) => {
       const result = await withSpan(
         'farm sell',
-        { attributes: { 'jds.user.id_hash': hashUserId(req.params.user_id), 'jds.sell.all': req.body?.all === true } },
+        { attributes: { 'jds.user.id': userIdAttr(req.params.user_id), 'jds.sell.all': req.body?.all === true } },
         async () => {
           const r = await farmService.sell(req.params.user_id, req.body || {});
           setAttrs({

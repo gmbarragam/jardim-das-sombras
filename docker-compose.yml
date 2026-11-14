@@ -22,9 +22,9 @@ services:
       # OpenTelemetry (ver OBSERVABILITY.md). Endpoint vazio = telemetria desligada (no-op).
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-jardim-das-sombras}
-      - OTEL_ID_SALT=${OTEL_ID_SALT:-}
       - OTEL_SDK_DISABLED=${OTEL_SDK_DISABLED:-}
       - OTEL_LOG_LEVEL=${OTEL_LOG_LEVEL:-error}
+      - OTEL_DEPLOYMENT_ENVIRONMENT=${OTEL_DEPLOYMENT_ENVIRONMENT:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
