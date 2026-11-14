@@ -191,6 +191,15 @@ export class CanvasRendererService {
     return entry;
   }
 
+  /** Span `canvas encode` em volta do toBuffer (síncrono), com formato e tamanho do resultado. */
+  private static encodeTraced(encode: () => Buffer, format: 'jpeg' | 'png'): Buffer {
+    return withSpan('canvas encode', { attributes: { 'jds.render.format': format }, outcome: false }, (encSpan) => {
+      const buf = encode();
+      setAttrs({ 'jds.render.bytes': buf.length }, encSpan);
+      return buf;
+    });
+  }
+
   public static async renderFarm(options: RenderFarmOptions, kind: RenderKind = 'farm'): Promise<Buffer> {
     return withSpan('farm render', { attributes: { 'jds.render.kind': kind }, outcome: false }, (span) =>
       this.renderFarmTraced(options, span),
@@ -209,6 +218,8 @@ export class CanvasRendererService {
       await this.init();
     }
     const drawStart = performance.now();
+    // Desenho e encode são síncronos: filhos manuais (canvas draw/encode) sob o `farm render` ativo.
+    const drawSpan = startSpan('canvas draw');
 
     const timeCycle: TimeCycle = getCurrentTimeCycle(options.timeCycleOverride);
     const bgKey = `farm_bg_${timeCycle}.png`;
@@ -360,11 +371,14 @@ export class CanvasRendererService {
       this.drawUserHeader(ctx, options.userName, options.headerStyle || 3);
     }
 
+    drawSpan.end();
+
     // toBuffer é síncrono: bloqueia o event loop durante o encode JPEG.
     const encodeStart = performance.now();
-    const buffer = canvas.toBuffer('image/jpeg', 85);
+    const buffer = this.encodeTraced(() => canvas.toBuffer('image/jpeg', 85), 'jpeg');
     setAttrs(
       {
+        'jds.render.format': 'jpeg',
         'jds.render.draw_ms': Math.round((encodeStart - drawStart) * 100) / 100,
         'jds.render.encode_ms': Math.round((performance.now() - encodeStart) * 100) / 100,
         'jds.render.bytes': buffer.length,
@@ -650,6 +664,7 @@ export class CanvasRendererService {
       await this.init();
     }
     const drawStart = performance.now();
+    const drawSpan = startSpan('canvas draw');
 
     const size = 512;
     const canvas = createCanvas(size, size);
@@ -731,10 +746,13 @@ export class CanvasRendererService {
     ctx.fillText(qtyText, badgeX + 54, badgeY + badgeH / 2 + 1);
     ctx.restore();
 
+    drawSpan.end();
+
     const encodeStart = performance.now();
-    const buffer = canvas.toBuffer('image/png');
+    const buffer = this.encodeTraced(() => canvas.toBuffer('image/png'), 'png');
     setAttrs(
       {
+        'jds.render.format': 'png',
         'jds.render.draw_ms': Math.round((encodeStart - drawStart) * 100) / 100,
         'jds.render.encode_ms': Math.round((performance.now() - encodeStart) * 100) / 100,
         'jds.render.bytes': buffer.length,
