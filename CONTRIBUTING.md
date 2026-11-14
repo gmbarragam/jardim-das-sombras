@@ -41,6 +41,15 @@ Antes de finalizar qualquer alteração ou abrir pull request:
 2. **Typecheck:** Execute `npx tsc --noEmit` em `api/` e em `bot/`. Não deve haver erros de compilação.
 3. **Integridade de Documentação:** Mantenha a documentação sincronizada em `README.md` e [`docs/INTEGRATION.md`](docs/INTEGRATION.md) se criar ou alterar rotas.
 
+### 2.4. Telemetria OpenTelemetry (Obrigatória em todo PR)
+Toda rota, serviço ou fluxo novo (ou alterado) deve sair instrumentado. Referência: [`OBSERVABILITY.md`](OBSERVABILITY.md) e o da ravena-ai. Helpers em `api/src/telemetry.ts` (no-op com a telemetria desligada).
+1. **Operação de negócio** (plantar, colher, vender, comprar, transferir…): `withSpan('<área> <operação>', { attributes: { 'jds.user.id': userIdAttr(userId) } }, async (span) => ...)`. Etapas lentas (render, encode, consulta pesada, aviso ao bot) ganham span filho; transações Prisma usam `withTxSpans`.
+2. **Atributos de negócio:** `setAttrs({ 'jds.<domínio>.<campo>': valor })`. Recusa esperada (`DomainError`, saldo, limite) é rejeição, não erro: use `markRejected`. Exceção inesperada: `recordError(span, err)`.
+3. **Rotas:** o `@fastify/otel` já cria o span SERVER, e o hook `preValidation` grava `user_id`/`userId`/`fromUserId`/`toUserId`. Prisma já é instrumentado via `$extends` (não use `@prisma/instrumentation`).
+4. **IDs:** jogador só via `userIdAttr()` em `jds.user.id` (ou `from_user`/`to_user`), nunca no nome do span. **Nunca** em span: nome de jogador ou fazenda, textos livres, mensagens de `DomainError`, tokens, headers.
+5. **Nome de span** de baixa cardinalidade, sem IDs nem valores (vira dimensão de métrica).
+6. **Documentação:** acrescente o span novo no `OBSERVABILITY.md`. **Validar:** com `OTEL_EXPORTER_OTLP_ENDPOINT` ligado localmente, confira o trace no Jaeger (`http://localhost:16686`).
+
 ---
 
 ## 🚀 3. Como Configurar o Ambiente de Desenvolvimento
