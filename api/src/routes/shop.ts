@@ -2,6 +2,7 @@ import { FastifyPluginAsync } from 'fastify';
 import { ShopService } from '../services/ShopService.js';
 import { CanvasRendererService } from '../services/CanvasRendererService.js';
 import { requireAuth } from '../plugins/auth.js';
+import { withSpan, setAttrs, hashId } from '../telemetry.js';
 
 export const shopRoutes: FastifyPluginAsync = async (fastify) => {
   const shopService = new ShopService(fastify.prisma);
@@ -22,7 +23,15 @@ export const shopRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: [requireAuth] },
     async (req, reply) => {
       const quantity = req.body.quantity || 1;
-      const result = await shopService.buy(req.params.user_id, req.body.itemId, quantity);
+      const result = await withSpan(
+        'shop buy',
+        { attributes: { 'jds.user.id_hash': hashId(req.params.user_id), 'jds.shop.quantity': quantity } },
+        async () => {
+          const r = await shopService.buy(req.params.user_id, req.body.itemId, quantity);
+          setAttrs({ 'jds.shop.item_id': r.itemId, 'jds.shop.cost': r.totalCost });
+          return r;
+        },
+      );
 
       // Generate sticker image with badge (e.g. "🌱 x3")
       let stickerBase64: string | undefined = undefined;

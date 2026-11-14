@@ -1,16 +1,25 @@
 import { FastifyPluginAsync } from 'fastify';
 import { PLANTS, DECORATIONS, CONSUMABLES } from '../utils/catalog.js';
+import { withSpan, setAttrs, hashId } from '../telemetry.js';
 
 export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
   // GET /inventory/:user_id
   fastify.get<{ Params: { user_id: string } }>('/inventory/:user_id', async (req, reply) => {
-    const player = await fastify.prisma.player.findUnique({
-      where: { id: req.params.user_id },
-      include: {
-        inventory: true,
-        decorations: true,
+    const player = await withSpan(
+      'inventory get',
+      { attributes: { 'jds.user.id_hash': hashId(req.params.user_id) } },
+      async () => {
+        const p = await fastify.prisma.player.findUnique({
+          where: { id: req.params.user_id },
+          include: {
+            inventory: true,
+            decorations: true,
+          },
+        });
+        setAttrs({ 'jds.inventory.found': !!p, 'jds.inventory.items': p?.inventory.length ?? 0 });
+        return p;
       },
-    });
+    );
 
     if (!player) {
       return reply.send({

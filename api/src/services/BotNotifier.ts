@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { setAttrs } from '../telemetry.js';
 import type { HarvestResultItem } from './FarmService.js';
 
 /**
@@ -54,18 +55,28 @@ export class BotNotifier {
   }
 
   public static notifyHarvest(playerId: string, harvested: HarvestResultItem[]): void {
-    if (!harvested || harvested.length === 0) return;
+    // Atributos vão para o span ativo (`farm harvest`). O fetch abaixo herda o contexto ativo,
+    // então o POST à ravena vira span CLIENT filho (undici) mesmo terminando depois.
+    if (!harvested || harvested.length === 0) {
+      setAttrs({ 'jds.notify.sent': false, 'jds.notify.skip_reason': 'empty' });
+      return;
+    }
 
     const url = this.resolveEndpoint();
-    if (!url) return;
+    if (!url) {
+      setAttrs({ 'jds.notify.sent': false, 'jds.notify.skip_reason': 'disabled' });
+      return;
+    }
 
     const apiKey = this.resolveApiKey();
     if (!apiKey) {
+      setAttrs({ 'jds.notify.sent': false, 'jds.notify.skip_reason': 'no_key' });
       console.warn('[BotNotifier] BOT_API_URL definido mas sem chave (BOT_API_TOKEN/API_KEY). Push ignorado.');
       return;
     }
 
     const payload = this.buildHarvestPayload(playerId, harvested);
+    setAttrs({ 'jds.notify.sent': true });
 
     fetch(url, {
       method: 'POST',

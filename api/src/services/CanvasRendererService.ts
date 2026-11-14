@@ -6,6 +6,10 @@ import { config } from '../config.js';
 import { getCurrentTimeCycle, TimeCycle } from '../utils/timeCycle.js';
 import { PLANTS, DECORATIONS } from '../utils/catalog.js';
 import { t } from '../utils/texts.js';
+import { withSpan, setAttrs, startSpan, type Span } from '../telemetry.js';
+
+/** Tipo de render para o span `farm render` (jds.render.kind). */
+export type RenderKind = 'farm' | 'share' | 'badge';
 
 export interface RenderSlotData {
   slotIndex: number; // 1 to 9
@@ -172,15 +176,39 @@ export class CanvasRendererService {
     this.initialized = true;
   }
 
-  public static async renderFarm(options: RenderFarmOptions): Promise<Buffer> {
+  /**
+   * Consulta o cache LRU pelas rotas de imagem (antes de renderizar, para responder 304/ETag).
+   * Num hit, registra um span `farm render` curto com jds.render.cache=hit.
+   */
+  public static lookupRenderCache(options: RenderFarmOptions, kind: RenderKind): RenderCacheEntry | undefined {
+    const entry = this.getRenderCacheEntry(options);
+    if (entry) {
+      const span = startSpan('farm render', {
+        attributes: { 'jds.render.kind': kind, 'jds.render.cache': 'hit', 'jds.render.bytes': entry.buffer.length },
+      });
+      span.end();
+    }
+    return entry;
+  }
+
+  public static async renderFarm(options: RenderFarmOptions, kind: RenderKind = 'farm'): Promise<Buffer> {
+    return withSpan('farm render', { attributes: { 'jds.render.kind': kind }, outcome: false }, (span) =>
+      this.renderFarmTraced(options, span),
+    );
+  }
+
+  private static async renderFarmTraced(options: RenderFarmOptions, span: Span): Promise<Buffer> {
     const cachedEntry = this.getRenderCacheEntry(options);
     if (cachedEntry) {
+      setAttrs({ 'jds.render.cache': 'hit', 'jds.render.bytes': cachedEntry.buffer.length }, span);
       return cachedEntry.buffer;
     }
+    setAttrs({ 'jds.render.cache': 'miss' }, span);
 
     if (!this.initialized) {
       await this.init();
     }
+    const drawStart = performance.now();
 
     const timeCycle: TimeCycle = getCurrentTimeCycle(options.timeCycleOverride);
     const bgKey = `farm_bg_${timeCycle}.png`;
@@ -332,7 +360,17 @@ export class CanvasRendererService {
       this.drawUserHeader(ctx, options.userName, options.headerStyle || 3);
     }
 
+    // toBuffer é síncrono: bloqueia o event loop durante o encode JPEG.
+    const encodeStart = performance.now();
     const buffer = canvas.toBuffer('image/jpeg', 85);
+    setAttrs(
+      {
+        'jds.render.draw_ms': Math.round((encodeStart - drawStart) * 100) / 100,
+        'jds.render.encode_ms': Math.round((performance.now() - encodeStart) * 100) / 100,
+        'jds.render.bytes': buffer.length,
+      },
+      span,
+    );
     const etag = `"${crypto.createHash('md5').update(buffer).digest('hex')}"`;
     const cacheKey = this.computeFarmCacheKey(options);
 
@@ -599,9 +637,19 @@ export class CanvasRendererService {
    * and quantity badge (e.g. "💰 x3") at the bottom.
    */
   public static async renderItemBadge(spriteName: string, quantity: number): Promise<Buffer> {
+    // Badge não tem cache: sempre renderiza (jds.render.cache=miss).
+    return withSpan(
+      'farm render',
+      { attributes: { 'jds.render.kind': 'badge', 'jds.render.cache': 'miss' }, outcome: false },
+      (span) => this.renderItemBadgeTraced(spriteName, quantity, span),
+    );
+  }
+
+  private static async renderItemBadgeTraced(spriteName: string, quantity: number, span: Span): Promise<Buffer> {
     if (!this.initialized) {
       await this.init();
     }
+    const drawStart = performance.now();
 
     const size = 512;
     const canvas = createCanvas(size, size);
@@ -683,7 +731,17 @@ export class CanvasRendererService {
     ctx.fillText(qtyText, badgeX + 54, badgeY + badgeH / 2 + 1);
     ctx.restore();
 
-    return canvas.toBuffer('image/png');
+    const encodeStart = performance.now();
+    const buffer = canvas.toBuffer('image/png');
+    setAttrs(
+      {
+        'jds.render.draw_ms': Math.round((encodeStart - drawStart) * 100) / 100,
+        'jds.render.encode_ms': Math.round((performance.now() - encodeStart) * 100) / 100,
+        'jds.render.bytes': buffer.length,
+      },
+      span,
+    );
+    return buffer;
   }
 
   /**
