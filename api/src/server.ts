@@ -9,6 +9,7 @@ import { isTrustedRequest } from './plugins/auth.js';
 import { DomainError } from './errors/DomainError.js';
 import { CanvasRendererService } from './services/CanvasRendererService.js';
 import { verifyAdminToken } from './utils/token.js';
+import { activeSpan, recordError, tagRequestIds } from './telemetry.js';
 
 import { farmRoutes } from './routes/farm.js';
 import { shopRoutes } from './routes/shop.js';
@@ -50,6 +51,13 @@ export async function buildServer() {
     max: 120,
     timeWindow: '1 minute',
     allowList: (req) => isTrustedRequest(req),
+  });
+
+  // Hash do usuário (user_id/userId de params, corpo ou query) nos spans da requisição.
+  // preValidation: o corpo já foi lido e este hook não vira span (o @fastify/otel só instrumenta preHandler).
+  fastify.addHook('preValidation', (request, _reply, done) => {
+    tagRequestIds(request);
+    done();
   });
 
   // Prisma plugin
@@ -129,6 +137,8 @@ export async function buildServer() {
     }
 
     request.log.error(error);
+    // 5xx inesperado: marca o span ativo da requisição como erro (DomainError não chega aqui).
+    recordError(activeSpan(), error);
     return reply.status(500).send({
       error: 'Erro interno no Jardim das Sombras',
       code: 'INTERNAL_ERROR',

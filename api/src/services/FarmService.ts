@@ -4,6 +4,7 @@ import { rollDailyBagCoins } from '../utils/economy.js';
 import { PLANTS, getBagPool, findPlant, DECORATIONS, findDecoration, CONSUMABLES, findConsumable } from '../utils/catalog.js';
 import { CanvasRendererService, isInsidePlantation } from './CanvasRendererService.js';
 import { BotNotifier } from './BotNotifier.js';
+import { withSpan, withTxSpans } from '../telemetry.js';
 
 export interface HarvestResultItem {
   plantId: string;
@@ -357,7 +358,9 @@ export class FarmService {
 
     const witheredReplaced = targetSlots.filter((s) => s.stage === 'withered').length;
 
-    await this.prisma.$transaction(async (tx) => {
+    // Span da transação (BEGIN/COMMIT não aparecem nos `prisma *`), com filhos begin/write/commit.
+    await withSpan('farm plant tx', { outcome: false, attributes: { 'jds.plant.count': plantedCount } }, () =>
+      withTxSpans('farm plant tx', (inTx) => this.prisma.$transaction((tx) => inTx(async () => {
       await tx.inventory.update({
         where: { playerId_itemId: { playerId, itemId: plantDef.id } },
         data: { quantity: { decrement: plantedCount } },
@@ -383,7 +386,7 @@ export class FarmService {
           ...(witheredReplaced > 0 ? { totalWithered: { increment: witheredReplaced } } : {}),
         },
       });
-    });
+    }))));
 
     CanvasRendererService.clearRenderCache();
 
@@ -447,50 +450,58 @@ export class FarmService {
       harvestedMap[plantDef.id].slotIndex = harvestedMap[plantDef.id].slots[0];
     }
 
-    await this.prisma.$transaction(async (tx) => {
-      if (readySlots.length > 0 || witheredSlots.length > 0) {
-        await tx.player.update({
-          where: { id: playerId },
-          data: {
-            ...(totalCoinsEarned > 0 ? { coins: { increment: totalCoinsEarned } } : {}),
-            ...(readySlots.length > 0 ? { totalHarvested: { increment: readySlots.length } } : {}),
-            ...(witheredSlots.length > 0 ? { totalWithered: { increment: witheredSlots.length } } : {}),
-          },
-        });
+    // Span da transação interativa: cobre BEGIN/COMMIT e a ida e volta do engine do Prisma,
+    // que não aparecem nos spans `prisma *` das operações individuais.
+    const allSlotsCount = readySlots.length + witheredSlots.length;
+    await withSpan(
+      'farm harvest tx',
+      { outcome: false, attributes: { 'jds.harvest.slots_reset': allSlotsCount, 'jds.harvest.plant_types': Object.keys(harvestedMap).length } },
+      () =>
+        withTxSpans('farm harvest tx', (inTx) => this.prisma.$transaction((tx) => inTx(async () => {
+          if (readySlots.length > 0 || witheredSlots.length > 0) {
+            await tx.player.update({
+              where: { id: playerId },
+              data: {
+                ...(totalCoinsEarned > 0 ? { coins: { increment: totalCoinsEarned } } : {}),
+                ...(readySlots.length > 0 ? { totalHarvested: { increment: readySlots.length } } : {}),
+                ...(witheredSlots.length > 0 ? { totalWithered: { increment: witheredSlots.length } } : {}),
+              },
+            });
 
-        // Adiciona as plantas colhidas ao inventário do jogador (para poder exibir e vender)
-        // e registra o total cumulativo por planta — fonte de verdade do evento de colheita
-        // para o bot creditar os bônus (o inventário muda com venda e não serve de prova).
-        for (const it of Object.values(harvestedMap)) {
-          const cropId = `crop_${it.plantId}`;
-          await tx.inventory.upsert({
-            where: { playerId_itemId: { playerId, itemId: cropId } },
-            create: { playerId, itemId: cropId, quantity: it.count },
-            update: { quantity: { increment: it.count } },
-          });
+            // Adiciona as plantas colhidas ao inventário do jogador (para poder exibir e vender)
+            // e registra o total cumulativo por planta — fonte de verdade do evento de colheita
+            // para o bot creditar os bônus (o inventário muda com venda e não serve de prova).
+            for (const it of Object.values(harvestedMap)) {
+              const cropId = `crop_${it.plantId}`;
+              await tx.inventory.upsert({
+                where: { playerId_itemId: { playerId, itemId: cropId } },
+                create: { playerId, itemId: cropId, quantity: it.count },
+                update: { quantity: { increment: it.count } },
+              });
 
-          await tx.cropHarvestTotal.upsert({
-            where: { playerId_itemId: { playerId, itemId: cropId } },
-            create: { playerId, itemId: cropId, totalHarvested: it.count },
-            update: { totalHarvested: { increment: it.count } },
-          });
-        }
-      }
+              await tx.cropHarvestTotal.upsert({
+                where: { playerId_itemId: { playerId, itemId: cropId } },
+                create: { playerId, itemId: cropId, totalHarvested: it.count },
+                update: { totalHarvested: { increment: it.count } },
+              });
+            }
+          }
 
-      const allSlotsToReset = [...readySlots, ...witheredSlots];
-      for (const slot of allSlotsToReset) {
-        await tx.farmSlot.update({
-          where: { id: slot.id },
-          data: {
-            plantId: null,
-            stage: 'empty',
-            plantedAt: null,
-            harvestAt: null,
-            witherAt: null,
-          },
-        });
-      }
-    });
+          const allSlotsToReset = [...readySlots, ...witheredSlots];
+          for (const slot of allSlotsToReset) {
+            await tx.farmSlot.update({
+              where: { id: slot.id },
+              data: {
+                plantId: null,
+                stage: 'empty',
+                plantedAt: null,
+                harvestAt: null,
+                witherAt: null,
+              },
+            });
+          }
+        }))),
+    );
 
     CanvasRendererService.clearRenderCache();
 

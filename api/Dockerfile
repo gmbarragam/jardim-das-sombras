@@ -38,4 +38,4 @@ USER node
 
 EXPOSE 3040
 
-CMD ["sh", "-c", "npx prisma db push --skip-generate && node dist/server.js"]
+CMD ["sh", "-c", "npx prisma db push --skip-generate && node --import ./dist/instrumentation.js dist/server.js"]

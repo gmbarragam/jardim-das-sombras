@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { setAttrs, startSpan, context, trace, SpanStatusCode } from '../telemetry.js';
 import type { HarvestResultItem } from './FarmService.js';
 
 /**
@@ -54,20 +55,46 @@ export class BotNotifier {
   }
 
   public static notifyHarvest(playerId: string, harvested: HarvestResultItem[]): void {
-    if (!harvested || harvested.length === 0) return;
+    // Motivos de "não enviado" vão para o span ativo (`farm harvest`). Quando há envio, o resultado
+    // (status HTTP, sent só se 2xx) vai para um span próprio `notify harvest`, filho do `farm harvest`,
+    // que termina quando o POST termina (depois do pai, pois é fire-and-forget). O POST vira o span
+    // CLIENT (undici) filho do `notify harvest`.
+    if (!harvested || harvested.length === 0) {
+      setAttrs({ 'jds.notify.sent': false, 'jds.notify.skip_reason': 'empty' });
+      return;
+    }
 
     const url = this.resolveEndpoint();
-    if (!url) return;
+    if (!url) {
+      setAttrs({ 'jds.notify.sent': false, 'jds.notify.skip_reason': 'disabled' });
+      return;
+    }
 
     const apiKey = this.resolveApiKey();
     if (!apiKey) {
+      setAttrs({ 'jds.notify.sent': false, 'jds.notify.skip_reason': 'no_key' });
       console.warn('[BotNotifier] BOT_API_URL definido mas sem chave (BOT_API_TOKEN/API_KEY). Push ignorado.');
       return;
     }
 
     const payload = this.buildHarvestPayload(playerId, harvested);
+    setAttrs({ 'jds.notify.attempted': true });
+    const span = startSpan('notify harvest', {
+      attributes: { 'jds.notify.plant_types': harvested.length, 'server.address': safeHost(url) },
+    });
+    let finished = false;
+    const finish = (attrs: Record<string, string | number | boolean>, failed: boolean, errorType?: string) => {
+      if (finished) return;
+      finished = true;
+      if (span.isRecording()) {
+        span.setAttributes(attrs);
+        if (errorType) span.setAttribute('error.type', errorType);
+        if (failed) span.setStatus({ code: SpanStatusCode.ERROR, message: errorType });
+      }
+      span.end();
+    };
 
-    fetch(url, {
+    context.with(trace.setSpan(context.active(), span), () => fetch(url, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -77,6 +104,16 @@ export class BotNotifier {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
       .then(async (res) => {
+        const ok = res.status >= 200 && res.status < 300;
+        finish(
+          {
+            'jds.notify.status_code': res.status,
+            'jds.notify.sent': ok,
+            'app.outcome': ok ? 'ok' : res.status < 500 ? 'rejected' : 'error',
+          },
+          res.status >= 500,
+          ok ? undefined : String(res.status),
+        );
         if (!res.ok) {
           const detail = (await res.text().catch(() => '')).slice(0, 200);
           console.warn(`[BotNotifier] colheita de ${playerId}: BotAPI respondeu HTTP ${res.status} ${detail}`);
@@ -84,10 +121,20 @@ export class BotNotifier {
       })
       .catch((err: unknown) => {
         const e = err as { name?: string; message?: string };
+        finish({ 'jds.notify.sent': false, 'app.outcome': 'error' }, true, e?.name || 'Error');
         console.warn(
           `[BotNotifier] colheita de ${playerId}: falha ao notificar a BotAPI (${e?.name ?? 'erro'}: ${e?.message ?? 'sem detalhes'}). ` +
             'O bot reconcilia os bônus no próximo comando do jogador.',
         );
-      });
+      }));
+  }
+}
+
+/** Só host:porta do destino (sem path/query) para o atributo server.address. */
+function safeHost(url: string): string | undefined {
+  try {
+    return new URL(url).host;
+  } catch {
+    return undefined;
   }
 }

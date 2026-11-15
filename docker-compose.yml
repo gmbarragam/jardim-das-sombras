@@ -19,6 +19,12 @@ services:
       - PUBLIC_URL=${PUBLIC_URL:-http://localhost:3040}
       - BOT_API_URL=${BOT_API_URL:-}
       - BOT_API_TOKEN=${BOT_API_TOKEN:-}
+      # OpenTelemetry (ver OBSERVABILITY.md). Endpoint vazio = telemetria desligada (no-op).
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-jardim-das-sombras}
+      - OTEL_SDK_DISABLED=${OTEL_SDK_DISABLED:-}
+      - OTEL_LOG_LEVEL=${OTEL_LOG_LEVEL:-error}
+      - OTEL_DEPLOYMENT_ENVIRONMENT=${OTEL_DEPLOYMENT_ENVIRONMENT:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
