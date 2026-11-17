@@ -112,6 +112,14 @@ Rotas de consulta pública (`GET /health`, `GET /farm/:user_id`, `GET /farm/:use
 | `POST` | `/admin/give` | `API_KEY` | `{"userId": "123", "itemId": "40", "amount": 1, "coins": 5000}` | Concede Petalitas, sementes, elixires ou decorações VIP (IDs 40 a 48). |
 | `POST` | `/admin/buff` | `API_KEY` | `{"userId": "123", "type": "growth_time_multiplier", "value": 0.8, "durationHours": 24}` | Aplica multiplicadores temporários ou permanentes na fazenda (ex: benefícios para apoiadores do bot). |
 
+### 3.5. Painel da Economia (interno)
+
+| Método | Endpoint | Auth | Descrição |
+|---|---|---|---|
+| `GET` | `/internal/economy/summary?from=<epoch_ms>&to=<epoch_ms>` | `API_KEY` (`x-api-key`) | Resumo agregado das Petalitas para o painel da ravena-ai. `from` inclusivo, `to` exclusivo, `from=0` = histórico inteiro; 400 se `to <= from` ou `to > agora + 60 s`. |
+
+Resposta: `currency: "petalitas"`, `schemaVersion: 1`, `generatedAt`, `window`, `ledger: { available: false, flows: [] }` (o Jardim ainda não tem extrato de Petalitas), `balances` (retrato de `players.coins` no instante da consulta: `total` = soma de todos os saldos, `holders` = contas com saldo > 0, `accounts`, `p50`/`p90`, `top10Share` e 5 `quintiles` `{ q, n, min, max, sum }` entre os holders) e `receivedByQuintile: []`. Nenhum dado por jogador sai da rota; quintos com `n < 10` vêm com `min`/`max`/`sum` nulos.
+
 ---
 
 ## 🌾 4. Despacho de Bônus de Colheita (Pesca, Waifus e Cassino)
