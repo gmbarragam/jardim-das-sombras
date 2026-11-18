@@ -1,6 +1,12 @@
 import { FastifyPluginAsync } from 'fastify';
 import { requireBotApiKey } from '../plugins/auth.js';
-import { getEconomySummary, parseSummaryOptions, parseSummaryWindow } from '../services/EconomySummaryService.js';
+import {
+  getEconomyPlayers,
+  getEconomySummary,
+  parsePlayersWindow,
+  parseSummaryOptions,
+  parseSummaryWindow,
+} from '../services/EconomySummaryService.js';
 import { setAttrs, withSpan } from '../telemetry.js';
 
 /** Rotas internas consumidas só pela ravena-ai (x-api-key). */
@@ -31,6 +37,23 @@ export const internalRoutes: FastifyPluginAsync = async (fastify) => {
         return s;
       });
       return reply.send(summary);
+    },
+  );
+
+  // GET /internal/economy/players?from=<epoch_ms>&to=<epoch_ms> — saldo por jogador (janela de até 8 dias)
+  fastify.get<{ Querystring: { from?: string; to?: string } }>(
+    '/internal/economy/players',
+    { preHandler: [requireBotApiKey] },
+    async (req, reply) => {
+      const result = await withSpan('economy players', {}, async (span) => {
+        const now = Date.now();
+        const window = parsePlayersWindow(req.query, now);
+        setAttrs({ 'jds.economy.window_ms': window.to - window.from }, span);
+        const r = await getEconomyPlayers(fastify.prisma, window, now);
+        setAttrs({ 'jds.economy.players': r.players.length }, span);
+        return r;
+      });
+      return reply.send(result);
     },
   );
 };

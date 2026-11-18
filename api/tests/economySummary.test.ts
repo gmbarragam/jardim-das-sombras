@@ -1,5 +1,6 @@
 /**
- * GET /internal/economy/summary (painel da economia, seção 1 do contrato).
+ * GET /internal/economy/summary (painel da economia, seção 1 do contrato) e
+ * GET /internal/economy/players (saldo por jogador).
  *
  * Os testes de rota precisam de um Postgres descartável com o schema aplicado; sem
  * JDS_TEST_DATABASE_URL eles são pulados. Exemplo:
@@ -12,7 +13,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { trace } from '@opentelemetry/api';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import type { FastifyInstance } from 'fastify';
-import { parseSummaryOptions, parseSummaryWindow, toQuintiles } from '../src/services/EconomySummaryService.js';
+import { parsePlayersWindow, parseSummaryOptions, parseSummaryWindow, toQuintiles } from '../src/services/EconomySummaryService.js';
 import { DomainError } from '../src/errors/DomainError.js';
 
 const NOW = 1_763_400_000_000;
@@ -54,6 +55,31 @@ describe('parseSummaryWindow', () => {
     bad({ from: '10', to: '10' });
     bad({ from: '11', to: '10' });
     bad({ from: '0', to: String(NOW + 60_001) });
+  });
+});
+
+describe('parsePlayersWindow', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const status = (q: Record<string, unknown>) => {
+    try {
+      parsePlayersWindow(q as never, NOW);
+    } catch (e) {
+      expect(e).toBeInstanceOf(DomainError);
+      return (e as DomainError).statusCode;
+    }
+    return 200;
+  };
+
+  it('aceita janela de até 8 dias', () => {
+    expect(parsePlayersWindow({ from: String(NOW - 8 * DAY), to: String(NOW) }, NOW)).toEqual({ from: NOW - 8 * DAY, to: NOW });
+  });
+
+  it('rejeita janela maior que 8 dias (inclusive from=0) e as mesmas entradas inválidas do resumo', () => {
+    expect(status({ from: String(NOW - 8 * DAY - 1), to: String(NOW) })).toBe(400);
+    expect(status({ from: '0', to: String(NOW) })).toBe(400);
+    expect(status({ from: '10', to: '10' })).toBe(400);
+    expect(status({ from: '0', to: String(NOW + 60_001) })).toBe(400);
+    expect(status({ from: 'abc', to: String(NOW) })).toBe(400);
   });
 });
 
@@ -315,5 +341,84 @@ describe.skipIf(!DB_URL)('GET /internal/economy/summary (Postgres)', () => {
       { q: 4, n: 0, min: null, max: null, sum: null },
       { q: 5, n: 0, min: null, max: null, sum: null },
     ]);
+  });
+
+  describe('GET /internal/economy/players', () => {
+    const HOUR = 60 * 60 * 1000;
+    const DAY = 24 * HOUR;
+    const players = (query: string, headers: Record<string, string> = { 'x-api-key': API_KEY }) =>
+      app.inject({ method: 'GET', url: `/internal/economy/players${query}`, headers });
+    const okWindow = () => `?from=${Date.now() - DAY}&to=${Date.now()}`;
+
+    it('401 sem chave, com chave errada e com token de jogador', async () => {
+      expect((await players(okWindow(), {})).statusCode).toBe(401);
+      expect((await players(okWindow(), { 'x-api-key': 'errada' })).statusCode).toBe(401);
+      expect((await players(okWindow(), { authorization: 'Bearer token-qualquer' })).statusCode).toBe(401);
+      expect((await players('?from=abc', {})).statusCode).toBe(401);
+    });
+
+    it.each([
+      ['sem parâmetros', () => ''],
+      ['from não numérico', () => '?from=abc&to=1000'],
+      ['to igual a from', () => '?from=1000&to=1000'],
+      ['to menor que from', () => '?from=2000&to=1000'],
+      ['to no futuro', () => `?from=${Date.now() - HOUR}&to=${Date.now() + 5 * 60_000}`],
+      ['janela maior que 8 dias', () => `?from=${Date.now() - 8 * DAY - 10_000}&to=${Date.now()}`],
+      ['histórico inteiro (from=0)', () => `?from=0&to=${Date.now()}`],
+    ])('400 com %s', async (_label, q) => {
+      const res = await players(q());
+      expect(res.statusCode).toBe(400);
+      expect(res.json().code).toBe('INVALID_PAYLOAD');
+    });
+
+    it('aceita janela de exatamente 8 dias', async () => {
+      const to = Date.now();
+      expect((await players(`?from=${to - 8 * DAY}&to=${to}`)).statusCode).toBe(200);
+    });
+
+    it('todo jogador com saldo diferente de zero, com nome de jogador ou da fazenda', async () => {
+      await app.prisma.player.createMany({
+        data: [
+          { id: 'p-b', coins: 300, playerName: 'Beto', farmName: 'Sítio do Beto' },
+          { id: 'p-a', coins: 100, farmName: 'Fazenda da Ana' },
+          { id: 'p-c', coins: -50 },
+          { id: 'p-z', coins: 0, playerName: 'Zerado' },
+        ],
+      });
+      const to = Date.now();
+      const from = to - DAY;
+      const res = await players(`?from=${from}&to=${to}`);
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({
+        currency: 'petalitas',
+        schemaVersion: 1,
+        generatedAt: expect.any(Number),
+        window: { from, to },
+        ledger: { available: false },
+        players: [
+          { id: 'p-a', name: 'Fazenda da Ana', platform: null, balance: 100, balanceAtWindowEnd: null, lastActiveAt: null },
+          { id: 'p-b', name: 'Beto', platform: null, balance: 300, balanceAtWindowEnd: null, lastActiveAt: null },
+          { id: 'p-c', name: null, platform: null, balance: -50, balanceAtWindowEnd: null, lastActiveAt: null },
+        ],
+        flows: [],
+      });
+
+      const span = exporter.getFinishedSpans().find((s) => s.name === 'economy players')!;
+      expect(span.attributes['app.outcome']).toBe('ok');
+      expect(span.attributes['jds.economy.players']).toBe(3);
+      expect(JSON.stringify(span.attributes)).not.toContain('p-a');
+    });
+
+    it('banco vazio: players []', async () => {
+      const body = (await players(okWindow())).json();
+      expect(body.players).toEqual([]);
+      expect(body.flows).toEqual([]);
+    });
+
+    it('a rejeição vira app.outcome=rejected no span', async () => {
+      await players(`?from=0&to=${Date.now()}`);
+      const span = exporter.getFinishedSpans().find((s) => s.name === 'economy players')!;
+      expect(span.attributes['app.outcome']).toBe('rejected');
+    });
   });
 });

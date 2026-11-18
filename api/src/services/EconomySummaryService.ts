@@ -15,6 +15,8 @@ import { DomainError } from '../errors/DomainError.js';
 export const SCHEMA_VERSION = 1;
 /** Folga para relógios dessincronizados: `to` pode estar até 60 s no futuro. */
 export const MAX_FUTURE_SKEW_MS = 60_000;
+/** Maior janela aceita em /internal/economy/players (8 dias, igual ao waifuletes). */
+export const PLAYERS_MAX_WINDOW_MS = 8 * 24 * 60 * 60 * 1000;
 
 export interface SummaryWindow {
   from: number;
@@ -54,6 +56,29 @@ export interface EconomySummary {
   receivedByQuintile: never[];
 }
 
+/**
+ * Recorte por jogador (GET /internal/economy/players). Sem extrato no Jardim: `ledger.available = false`,
+ * `flows = []`, `balanceAtWindowEnd` e `lastActiveAt` nulos e `platform` nulo (o Jardim não guarda a plataforma).
+ */
+export interface EconomyPlayer {
+  id: string;
+  name: string | null;
+  platform: null;
+  balance: number;
+  balanceAtWindowEnd: null;
+  lastActiveAt: null;
+}
+
+export interface EconomyPlayers {
+  currency: 'petalitas';
+  schemaVersion: number;
+  generatedAt: number;
+  window: SummaryWindow;
+  ledger: { available: false };
+  players: EconomyPlayer[];
+  flows: never[];
+}
+
 const EPOCH_MS = /^\d{1,16}$/;
 
 function parseEpochMs(name: string, raw: unknown): number {
@@ -78,6 +103,15 @@ export function parseSummaryWindow(query: { from?: unknown; to?: unknown } | und
     throw new DomainError('Parâmetro "to" não pode estar no futuro.', 'INVALID_PAYLOAD', 400);
   }
   return { from, to };
+}
+
+/** Janela de /internal/economy/players: mesmas regras do resumo e no máximo 8 dias. Erro: DomainError 400. */
+export function parsePlayersWindow(query: { from?: unknown; to?: unknown } | undefined, now: number): SummaryWindow {
+  const window = parseSummaryWindow(query, now);
+  if (window.to - window.from > PLAYERS_MAX_WINDOW_MS) {
+    throw new DomainError('A janela não pode passar de 8 dias.', 'INVALID_PAYLOAD', 400);
+  }
+  return window;
 }
 
 /** Flag opcional `0`/`1` da query; ausente = `fallback`. Qualquer outro valor: DomainError 400. */
@@ -192,5 +226,37 @@ export async function getEconomySummary(
     // Sem extrato não há entradas por motivo de criação para distribuir por faixa,
     // com ou sem received=1.
     receivedByQuintile: [],
+  };
+}
+
+/**
+ * Todo jogador com saldo diferente de zero (inclui negativos, como `total` do resumo), em ordem de id.
+ * Nome: playerName, senão farmName, senão null. Sem extrato, a janela não filtra nada: só volta no eco.
+ */
+export async function getEconomyPlayers(
+  prisma: PrismaClient,
+  window: SummaryWindow,
+  now: number = Date.now(),
+): Promise<EconomyPlayers> {
+  const rows = await prisma.player.findMany({
+    where: { coins: { not: 0 } },
+    select: { id: true, playerName: true, farmName: true, coins: true },
+    orderBy: { id: 'asc' },
+  });
+  return {
+    currency: 'petalitas',
+    schemaVersion: SCHEMA_VERSION,
+    generatedAt: now,
+    window,
+    ledger: { available: false },
+    players: rows.map((r) => ({
+      id: r.id,
+      name: r.playerName ?? r.farmName ?? null,
+      platform: null,
+      balance: r.coins,
+      balanceAtWindowEnd: null,
+      lastActiveAt: null,
+    })),
+    flows: [],
   };
 }
