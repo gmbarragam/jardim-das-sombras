@@ -8,11 +8,11 @@
  *   JDS_TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/jds_test npm test
  * NUNCA aponte para um banco real: os testes apagam a tabela players.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { trace } from '@opentelemetry/api';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import type { FastifyInstance } from 'fastify';
-import { parseSummaryWindow, protectQuintiles, MIN_GROUP_SIZE } from '../src/services/EconomySummaryService.js';
+import { parseSummaryOptions, parseSummaryWindow, protectQuintiles, MIN_GROUP_SIZE } from '../src/services/EconomySummaryService.js';
 import { DomainError } from '../src/errors/DomainError.js';
 
 const NOW = 1_763_400_000_000;
@@ -55,6 +55,32 @@ describe('parseSummaryWindow', () => {
     bad({ from: '11', to: '10' });
     bad({ from: '0', to: String(NOW + 60_001) });
   });
+});
+
+describe('parseSummaryOptions', () => {
+  it('padrão: balances=1, received=0', () => {
+    expect(parseSummaryOptions(undefined)).toEqual({ balances: true, received: false });
+    expect(parseSummaryOptions({})).toEqual({ balances: true, received: false });
+  });
+
+  it('aceita 0 e 1', () => {
+    expect(parseSummaryOptions({ balances: '0', received: '1' })).toEqual({ balances: false, received: true });
+    expect(parseSummaryOptions({ balances: '1', received: '0' })).toEqual({ balances: true, received: false });
+  });
+
+  it.each([['balances', 'true'], ['balances', '2'], ['balances', ''], ['received', 'sim'], ['received', '-1']])(
+    'rejeita %s=%s com 400',
+    (name, value) => {
+      let err: unknown;
+      try {
+        parseSummaryOptions({ [name]: value });
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(DomainError);
+      expect((err as DomainError).statusCode).toBe(400);
+    },
+  );
 });
 
 describe('protectQuintiles', () => {
@@ -131,6 +157,9 @@ describe.skipIf(!DB_URL)('GET /internal/economy/summary (Postgres)', () => {
       ['from negativo', '?from=-5&to=1000'],
       ['to igual a from', '?from=1000&to=1000'],
       ['to menor que from', '?from=2000&to=1000'],
+      ['balances inválido', '?from=0&to=1000&balances=2'],
+      ['balances=true', '?from=0&to=1000&balances=true'],
+      ['received inválido', '?from=0&to=1000&received=x'],
     ])('400 com %s', async (_label, q) => {
       const res = await get(q);
       expect(res.statusCode).toBe(400);
@@ -160,6 +189,47 @@ describe.skipIf(!DB_URL)('GET /internal/economy/summary (Postgres)', () => {
     expect(typeof body.generatedAt).toBe('number');
     expect(body.ledger).toEqual({ available: false, flows: [] });
     expect(body.receivedByQuintile).toEqual([]);
+  });
+
+  it('balances=0 pula o retrato e devolve balances: null; o resto da resposta não muda', async () => {
+    await seed([100, 200, 300]);
+    const to = Date.now();
+    const spy = vi.spyOn(app.prisma, '$queryRaw');
+    const res = await get(`?from=0&to=${to}&balances=0`);
+    // Nenhuma consulta de saldos foi feita.
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.balances).toBeNull();
+    expect(body).toMatchObject({
+      currency: 'petalitas',
+      schemaVersion: 1,
+      window: { from: 0, to },
+      ledger: { available: false, flows: [] },
+      receivedByQuintile: [],
+    });
+    const span = exporter.getFinishedSpans().find((s) => s.name === 'economy summary')!;
+    expect(span.attributes['jds.economy.balances']).toBe(false);
+    expect(span.attributes['jds.economy.holders']).toBeUndefined();
+  });
+
+  it('balances=1 explícito e received=0|1 aceitos (received ignorado: sem extrato)', async () => {
+    await seed([100, 200, 300]);
+    for (const q of ['&balances=1', '&received=1', '&received=0', '&balances=1&received=1']) {
+      const res = await get(`?from=0&to=${Date.now()}${q}`);
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.balances).toMatchObject({ total: 600, holders: 3, accounts: 3 });
+      expect(body.receivedByQuintile).toEqual([]);
+    }
+  });
+
+  it('sanidade do espião: balances padrão chama a consulta de saldos uma vez', async () => {
+    const spy = vi.spyOn(app.prisma, '$queryRaw');
+    expect((await get(okQuery())).statusCode).toBe(200);
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
   });
 
   it('banco vazio: zeros, percentis nulos e 5 quintos vazios', async () => {

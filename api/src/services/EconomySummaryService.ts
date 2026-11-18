@@ -23,6 +23,13 @@ export interface SummaryWindow {
   to: number;
 }
 
+export interface SummaryOptions {
+  /** false (`balances=0`) pula o retrato de saldos e devolve `balances: null`. Padrão: true. */
+  balances: boolean;
+  /** `received=0|1`: aceito por consistência do contrato; sem extrato, `receivedByQuintile` é sempre []. */
+  received: boolean;
+}
+
 export interface Quintile {
   q: number;
   n: number;
@@ -45,7 +52,7 @@ export interface EconomySummary {
     p90: number | null;
     top10Share: number | null;
     quintiles: Quintile[];
-  };
+  } | null;
   receivedByQuintile: never[];
 }
 
@@ -73,6 +80,22 @@ export function parseSummaryWindow(query: { from?: unknown; to?: unknown } | und
     throw new DomainError('Parâmetro "to" não pode estar no futuro.', 'INVALID_PAYLOAD', 400);
   }
   return { from, to };
+}
+
+/** Flag opcional `0`/`1` da query; ausente = `fallback`. Qualquer outro valor: DomainError 400. */
+function parseFlag(name: string, raw: unknown, fallback: boolean): boolean {
+  if (raw === undefined) return fallback;
+  if (raw === '0') return false;
+  if (raw === '1') return true;
+  throw new DomainError(`Parâmetro "${name}" deve ser 0 ou 1.`, 'INVALID_PAYLOAD', 400);
+}
+
+/** Lê `balances` (padrão 1) e `received` (padrão 0) da query. */
+export function parseSummaryOptions(query: { balances?: unknown; received?: unknown } | undefined): SummaryOptions {
+  return {
+    balances: parseFlag('balances', query?.balances, true),
+    received: parseFlag('received', query?.received, false),
+  };
 }
 
 interface RawQuintile {
@@ -118,7 +141,7 @@ export function protectQuintiles(raw: RawQuintile[]): Quintile[] {
  *  - holders: contas com saldo > 0; accounts: todas as contas;
  *  - p50/p90 (percentile_disc), top10Share e quintos (ntile(5), do menor para o maior): entre holders.
  */
-export async function getBalancesSnapshot(prisma: PrismaClient): Promise<EconomySummary['balances']> {
+export async function getBalancesSnapshot(prisma: PrismaClient): Promise<NonNullable<EconomySummary['balances']>> {
   const rows = await prisma.$queryRaw<RawBalances[]>`
     WITH h AS (
       SELECT coins::bigint AS c,
@@ -157,8 +180,14 @@ export async function getBalancesSnapshot(prisma: PrismaClient): Promise<Economy
   };
 }
 
-export async function getEconomySummary(prisma: PrismaClient, window: SummaryWindow, now: number = Date.now()): Promise<EconomySummary> {
-  const balances = await getBalancesSnapshot(prisma);
+export async function getEconomySummary(
+  prisma: PrismaClient,
+  window: SummaryWindow,
+  now: number = Date.now(),
+  options: SummaryOptions = { balances: true, received: false },
+): Promise<EconomySummary> {
+  // balances=0: pedaços históricos da carga inicial não precisam do retrato (que não depende da janela).
+  const balances = options.balances ? await getBalancesSnapshot(prisma) : null;
   return {
     currency: 'petalitas',
     schemaVersion: SCHEMA_VERSION,
@@ -166,7 +195,8 @@ export async function getEconomySummary(prisma: PrismaClient, window: SummaryWin
     window,
     ledger: { available: false, flows: [] },
     balances,
-    // Sem extrato não há entradas por motivo de criação para distribuir por faixa.
+    // Sem extrato não há entradas por motivo de criação para distribuir por faixa,
+    // com ou sem received=1.
     receivedByQuintile: [],
   };
 }
