@@ -12,7 +12,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { trace } from '@opentelemetry/api';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import type { FastifyInstance } from 'fastify';
-import { parseSummaryOptions, parseSummaryWindow, protectQuintiles, MIN_GROUP_SIZE } from '../src/services/EconomySummaryService.js';
+import { parseSummaryOptions, parseSummaryWindow, toQuintiles } from '../src/services/EconomySummaryService.js';
 import { DomainError } from '../src/errors/DomainError.js';
 
 const NOW = 1_763_400_000_000;
@@ -83,14 +83,16 @@ describe('parseSummaryOptions', () => {
   );
 });
 
-describe('protectQuintiles', () => {
-  it(`anula min/max/sum quando n < ${MIN_GROUP_SIZE}`, () => {
-    const out = protectQuintiles([
+describe('toQuintiles', () => {
+  it('não anula quintos pequenos (n < 10); quinto vazio fica com nulos', () => {
+    const out = toQuintiles([
       { q: 1, n: 9, min: 1, max: 5, sum: 20 },
       { q: 2, n: 10, min: 6, max: 9, sum: 70 },
+      { q: 3, n: 0, min: null, max: null, sum: null },
     ]);
-    expect(out[0]).toEqual({ q: 1, n: 9, min: null, max: null, sum: null });
+    expect(out[0]).toEqual({ q: 1, n: 9, min: 1, max: 5, sum: 20 });
     expect(out[1]).toEqual({ q: 2, n: 10, min: 6, max: 9, sum: 70 });
+    expect(out[2]).toEqual({ q: 3, n: 0, min: null, max: null, sum: null });
   });
 });
 
@@ -277,24 +279,41 @@ describe.skipIf(!DB_URL)('GET /internal/economy/summary (Postgres)', () => {
     expect(JSON.stringify(span.attributes)).not.toContain('econ-seed-');
   });
 
-  it('quintos com n < 10 vêm nulos; os agregados gerais continuam', async () => {
+  it('quintos com n < 10 saem preenchidos', async () => {
     // 23 holders: ntile(5) = 5, 5, 5, 4, 4
     await seed(Array.from({ length: 23 }, (_, i) => (i + 1) * 10));
     const b = (await get(okQuery())).json().balances;
     expect(b.holders).toBe(23);
     expect(b.total).toBe(10 * (23 * 24) / 2);
-    expect(b.quintiles.map((q: { n: number }) => q.n)).toEqual([5, 5, 5, 4, 4]);
-    for (const q of b.quintiles) expect(q).toMatchObject({ min: null, max: null, sum: null });
+    expect(b.quintiles).toEqual([
+      { q: 1, n: 5, min: 10, max: 50, sum: 150 },
+      { q: 2, n: 5, min: 60, max: 100, sum: 400 },
+      { q: 3, n: 5, min: 110, max: 150, sum: 650 },
+      { q: 4, n: 4, min: 160, max: 190, sum: 700 },
+      { q: 5, n: 4, min: 200, max: 230, sum: 860 },
+    ]);
     // top 10% = ceil(2.3) = 3 contas: 230 + 220 + 210
     expect(b.top10Share).toBeCloseTo(660 / 2760, 10);
   });
 
-  it('quinto com exatamente 10 sai preenchido e com 9 sai nulo', async () => {
+  it('quinto com 10 e com 9 contas saem preenchidos', async () => {
     // 49 holders: ntile(5) = 10, 10, 10, 10, 9
     await seed(Array.from({ length: 49 }, (_, i) => i + 1));
     const qs = (await get(okQuery())).json().balances.quintiles;
     expect(qs.map((q: { n: number }) => q.n)).toEqual([10, 10, 10, 10, 9]);
     expect(qs[3]).toEqual({ q: 4, n: 10, min: 31, max: 40, sum: 355 });
-    expect(qs[4]).toEqual({ q: 5, n: 9, min: null, max: null, sum: null });
+    expect(qs[4]).toEqual({ q: 5, n: 9, min: 41, max: 49, sum: 405 });
+  });
+
+  it('com 2 holders, os quintos com membros saem preenchidos e os vazios com n=0 e nulos', async () => {
+    await seed([300, 700, 0]);
+    const qs = (await get(okQuery())).json().balances.quintiles;
+    expect(qs).toEqual([
+      { q: 1, n: 1, min: 300, max: 300, sum: 300 },
+      { q: 2, n: 1, min: 700, max: 700, sum: 700 },
+      { q: 3, n: 0, min: null, max: null, sum: null },
+      { q: 4, n: 0, min: null, max: null, sum: null },
+      { q: 5, n: 0, min: null, max: null, sum: null },
+    ]);
   });
 });

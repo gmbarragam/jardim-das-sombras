@@ -5,16 +5,14 @@ import { DomainError } from '../errors/DomainError.js';
  * Resumo agregado da economia de Petalitas para o painel da ravena-ai
  * (contrato "Painel da economia", seção 1).
  *
- * Privacidade: nenhum dado por jogador sai daqui. Só totais, contagens e faixas (quintos);
- * quintos com menos de MIN_GROUP_SIZE contas vêm com min/max/sum nulos.
+ * Só totais, contagens e faixas (quintos). Os quintos saem sempre preenchidos, mesmo com poucas
+ * contas: é moeda de jogo e identificar jogadores não é problema (decisão do dono do produto).
  *
  * O Jardim ainda não tem extrato de Petalitas: `ledger.available = false` e
  * `receivedByQuintile = []` até existir um.
  */
 
 export const SCHEMA_VERSION = 1;
-/** Quintos com n menor que isso vêm com valores nulos (evita identificar alguém em grupo pequeno). */
-export const MIN_GROUP_SIZE = 10;
 /** Folga para relógios dessincronizados: `to` pode estar até 60 s no futuro. */
 export const MAX_FUTURE_SKEW_MS = 60_000;
 
@@ -119,19 +117,15 @@ interface RawBalances {
 
 const num = (v: bigint | number | null | undefined): number | null => (v === null || v === undefined ? null : Number(v));
 
-/** Anula min/max/sum de quintos pequenos (n < MIN_GROUP_SIZE). */
-export function protectQuintiles(raw: RawQuintile[]): Quintile[] {
-  return raw.map((r) => {
-    const n = Number(r.n) || 0;
-    const small = n < MIN_GROUP_SIZE;
-    return {
-      q: Number(r.q),
-      n,
-      min: small ? null : num(r.min),
-      max: small ? null : num(r.max),
-      sum: small ? null : num(r.sum),
-    };
-  });
+/** Converte os quintos crus do Postgres em números. Quinto sem membros vem com n=0 e min/max/sum nulos. */
+export function toQuintiles(raw: RawQuintile[]): Quintile[] {
+  return raw.map((r) => ({
+    q: Number(r.q),
+    n: Number(r.n) || 0,
+    min: num(r.min),
+    max: num(r.max),
+    sum: num(r.sum),
+  }));
 }
 
 /**
@@ -176,7 +170,7 @@ export async function getBalancesSnapshot(prisma: PrismaClient): Promise<NonNull
     p50: num(r.p50),
     p90: num(r.p90),
     top10Share: holdersSum > 0 ? Number(r.top_sum) / holdersSum : null,
-    quintiles: protectQuintiles(r.quintiles ?? []),
+    quintiles: toQuintiles(r.quintiles ?? []),
   };
 }
 
