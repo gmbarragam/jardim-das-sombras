@@ -12,7 +12,7 @@ export interface DailyBagEconomy {
 
 const DEFAULT_BAG: DailyBagEconomy = { minPercent: 0.2, maxPercent: 0.4, floorMin: 150, floorMax: 300, cap: 6000 };
 
-let dailyBag: DailyBagEconomy = DEFAULT_BAG;
+export let dailyBag: DailyBagEconomy = DEFAULT_BAG;
 
 export function loadEconomy(): void {
   try {

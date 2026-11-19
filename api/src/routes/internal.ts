@@ -8,6 +8,7 @@ import {
   parseSummaryWindow,
 } from '../services/EconomySummaryService.js';
 import { setAttrs, withSpan } from '../telemetry.js';
+import { getEconomyParams } from '../utils/economyParams.js';
 
 /** Rotas internas consumidas só pela ravena-ai (x-api-key). */
 export const internalRoutes: FastifyPluginAsync = async (fastify) => {
@@ -56,4 +57,13 @@ export const internalRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send(result);
     },
   );
+  // GET /internal/economy/params — parâmetros de balanceamento das Petalitas (catálogo e sacola diária), mapa plano
+  fastify.get('/internal/economy/params', { preHandler: [requireBotApiKey] }, async (_req, reply) => {
+    const result = withSpan('economy params', {}, (span) => {
+      const r = getEconomyParams();
+      setAttrs({ 'jds.economy.params': Object.keys(r.params).length }, span);
+      return r;
+    });
+    return reply.send(result);
+  });
 };
