@@ -52,6 +52,20 @@ Toda rota, serviço ou fluxo novo (ou alterado) deve sair instrumentado. Referê
 
 ---
 
+### 2.5. Mudanças de balanceamento da economia: registrar depois do deploy (OBRIGATÓRIO)
+O painel da economia (Grafana, aba **Mudanças**) compara os 7 dias antes e depois de cada mudança. Para isso, toda mudança que altere quanto de Petalitas entra ou sai precisa estar registrada **no instante em que passou a valer em produção**.
+- **O que conta:** recompensa, preço, taxa, limite diário, chance, cotação, multiplicador, cooldown que limita ganho, evento com prêmio, compensação, give-all e script retroativo que credita ou debita moeda.
+- **Prefira constante a número solto no código.** Os valores ficam no catálogo (`data/plants|decorations|consumables.json`), em `data/economy.json` e nas constantes de `catalog.ts`, `economy.ts`, `FarmService.ts` e `ShopService.ts`, e saem em `api/src/utils/economyParams.ts`. Constante que está na rota `GET /internal/economy/params` é registrada sozinha pela ravena no deploy, com o valor antigo e o novo. Constante nova nos arquivos cobertos precisa entrar na rota ou na lista de ignoradas, ou o teste de guarda falha.
+- **Registre depois do deploy, nunca no commit nem na abertura do PR.** O commit pode levar dias para ir ao ar, e a ficha mediria a semana errada.
+- **No PR**, inclua uma seção "Registro pós-deploy" com o comando pronto para quem fizer o deploy:
+  `docker exec ravena-ai node scripts/economy-annotate.js "<o que mudou e por quê>" <zinthos|petalitas|runas|todas> [hora ISO do deploy]`
+  Sem a hora, o registro vale para agora. Se o deploy já aconteceu, passe a hora dele.
+- **Se você fizer ou acompanhar o deploy**, rode o comando assim que a versão nova estiver no ar. Antes, confira com `docker exec ravena-ai node scripts/economy-annotate.js --listar` se a mudança já entrou como automática. Se entrou, não registre de novo: o porquê fica no PR.
+- **Script retroativo, compensação ou give-all:** registre depois da execução, com a hora em que rodou.
+- **Possíveis mudanças** (marca âmbar, detectadas nos dados): decida com `--confirmar <ts> "texto"` ou `--descartar <ts> "texto"` (o `ts` sai do `--listar`).
+
+---
+
 ## 🚀 3. Como Configurar o Ambiente de Desenvolvimento
 
 ### Pré-requisitos
