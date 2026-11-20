@@ -3,7 +3,7 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 
-import { config } from './config.js';
+import { config, apiKeyStartupWarning } from './config.js';
 import prismaPlugin from './plugins/prisma.js';
 import { isTrustedRequest } from './plugins/auth.js';
 import { DomainError } from './errors/DomainError.js';
@@ -156,6 +156,13 @@ export async function start() {
   await CanvasRendererService.init();
 
   const app = await buildServer();
+  // Chave de exemplo ou vazia em produção: aviso alto, mas sobe mesmo assim (a ravena depende do serviço).
+  const keyWarning = apiKeyStartupWarning();
+  if (keyWarning) {
+    const bar = '!'.repeat(100);
+    app.log.error({ security: 'api_key' }, `[SEGURANÇA] ${keyWarning}`);
+    console.error(`\n${bar}\n🚨 [SEGURANÇA] ${keyWarning}\n${bar}\n`);
+  }
   try {
     await app.listen({ port: config.PORT, host: '0.0.0.0' });
     console.log(`\n🦇 [Jardim das Sombras] API running on http://0.0.0.0:${config.PORT}`);
