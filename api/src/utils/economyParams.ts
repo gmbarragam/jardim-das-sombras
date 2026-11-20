@@ -1,6 +1,18 @@
 import { performance } from 'node:perf_hooks';
 import { PLANTS, DECORATIONS, CONSUMABLES } from './catalog.js';
-import { dailyBag } from './economy.js';
+import {
+  dailyBag,
+  DAILY_BAG_GUARANTEED_SEEDS,
+  DAILY_BAG_BONUS_CHANCE_PERCENT,
+  DAILY_BAG_LUCK_WEIGHT,
+  VOID_NECTAR_GROWTH_FACTOR,
+  LIQUID_ASHES_BAG_BONUS,
+  WIDOWS_FILTER_BAG_LUCK_MULTIPLIER,
+  MIDAS_TEAR_COIN_BONUS,
+  FARM_COIN_MULTIPLIER_CAP,
+  FARM_GROWTH_REDUCTION_CAP,
+  FARM_GROWTH_MULTIPLIER_FLOOR,
+} from './economy.js';
 
 /**
  * Parâmetros de balanceamento das Petalitas para o painel da ravena-ai (GET /internal/economy/params).
@@ -59,6 +71,18 @@ function groups(): Record<string, Record<string, Source>> {
     daily: {
       // Sacola diária efetiva (data/economy.json sobre o padrão de utils/economy.ts).
       DAILY_BAG: { ...dailyBag },
+      DAILY_BAG_GUARANTEED_SEEDS,
+      DAILY_BAG_BONUS_CHANCE_PERCENT,
+      DAILY_BAG_LUCK_WEIGHT,
+      LIQUID_ASHES_BAG_BONUS,
+      WIDOWS_FILTER_BAG_LUCK_MULTIPLIER,
+    },
+    farm: {
+      VOID_NECTAR_GROWTH_FACTOR,
+      MIDAS_TEAR_COIN_BONUS,
+      FARM_COIN_MULTIPLIER_CAP,
+      FARM_GROWTH_REDUCTION_CAP,
+      FARM_GROWTH_MULTIPLIER_FLOOR,
     },
   };
 }
