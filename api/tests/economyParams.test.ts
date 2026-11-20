@@ -20,15 +20,16 @@ const { buildEconomyParams, PLANT_PARAM_FIELDS, DECORATION_PARAM_FIELDS, CONSUMA
   '../src/utils/economyParams.js'
 );
 const { PLANTS, DECORATIONS, CONSUMABLES } = await import('../src/utils/catalog.js');
-const { dailyBag } = await import('../src/utils/economy.js');
+const economy = await import('../src/utils/economy.js');
+const { dailyBag } = economy;
 const { config } = await import('../src/config.js');
 
 const ROUTE = '/internal/economy/params';
 const API_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
- * Arquivos de onde saem os parâmetros. Toda `export const NOME_EM_MAIUSCULAS` deles precisa estar na rota ou em
- * IGNORED_CONSTANTS; toda chave de config.ts, na rota ou em IGNORED_CONFIG_KEYS; todo campo dos JSONs do
+ * Arquivos de onde saem os parâmetros. Toda `export const NOME_EM_MAIUSCULAS` deles, e toda
+ * `const NOME_EM_MAIUSCULAS = <número>` sem export, precisa estar na rota ou em IGNORED_CONSTANTS; toda chave de config.ts, na rota ou em IGNORED_CONFIG_KEYS; todo campo dos JSONs do
  * catálogo e da sacola, na rota ou em IGNORED_FIELDS.
  */
 const SOURCE_FILES = [
@@ -40,6 +41,9 @@ const SOURCE_FILES = [
 ];
 
 const IGNORED_CONSTANTS: Record<string, string> = {};
+
+/** `const NOME = <número>` sem export, também indentada (dentro de função). */
+const NUMERIC_CONST_RE = /^\s*const ([A-Z][A-Z0-9_]+)\s*(?::\s*number\s*)?=\s*[-+(]?\d/gm;
 
 const IGNORED_CONFIG_KEYS: Record<string, string> = {
   PORT: 'infraestrutura',
@@ -147,7 +151,8 @@ describe('GET /internal/economy/params', () => {
     expect(keys.length).toBeGreaterThan(100);
     expect(keys).toEqual([...keys].sort());
     for (const [k, v] of Object.entries(body.params)) {
-      expect(k).toMatch(/^[a-z]+\.[A-Z][A-Z0-9_]*(\.[A-Za-z0-9_]+)+$/);
+      // <grupo>.<NOME> (constante escalar) ou <grupo>.<NOME>.<chave>[.<campo>] (objetos), como no waifuletes.
+      expect(k).toMatch(/^[a-z]+\.[A-Z][A-Z0-9_]*(\.[A-Za-z0-9_]+)*$/);
       expect(['number', 'string', 'boolean']).toContain(typeof v);
       expect(k).not.toMatch(/API_KEY|SECRET|TOKEN|PASSWORD|_URL/);
       if (typeof v === 'string') expect(v).not.toMatch(/:\/\//);
@@ -167,11 +172,52 @@ describe('GET /internal/economy/params', () => {
       for (const f of CONSUMABLE_PARAM_FIELDS) flat(`catalog.CONSUMABLES.${key}.${f}`, c[f], expected);
     }
     flat('daily.DAILY_BAG', dailyBag, expected);
+    for (const name of [
+      'DAILY_BAG_GUARANTEED_SEEDS',
+      'DAILY_BAG_BONUS_CHANCE_PERCENT',
+      'DAILY_BAG_LUCK_WEIGHT',
+      'LIQUID_ASHES_BAG_BONUS',
+      'WIDOWS_FILTER_BAG_LUCK_MULTIPLIER',
+    ] as const) {
+      flat(`daily.${name}`, economy[name], expected);
+    }
+    for (const name of [
+      'VOID_NECTAR_GROWTH_FACTOR',
+      'MIDAS_TEAR_COIN_BONUS',
+      'FARM_COIN_MULTIPLIER_CAP',
+      'FARM_GROWTH_REDUCTION_CAP',
+      'FARM_GROWTH_MULTIPLIER_FLOOR',
+    ] as const) {
+      flat(`farm.${name}`, economy[name], expected);
+    }
     expect(params).toEqual(expected);
 
     const [plantKey, plant] = Object.entries(PLANTS)[0];
     expect(params[`catalog.PLANTS.${plantKey}.seedPrice`]).toBe(plant.seedPrice);
     expect(params['daily.DAILY_BAG.cap']).toBe(dailyBag.cap);
+  });
+
+  it('constantes extraídas de números soltos mantêm os valores de antes', async () => {
+    const { params } = (await get()).json();
+    expect(params['daily.DAILY_BAG_GUARANTEED_SEEDS']).toBe(3);
+    expect(params['daily.DAILY_BAG_BONUS_CHANCE_PERCENT.epic']).toBe(3);
+    expect(params['daily.DAILY_BAG_BONUS_CHANCE_PERCENT.rare']).toBe(10);
+    expect(params['daily.DAILY_BAG_BONUS_CHANCE_PERCENT.uncommon']).toBe(20);
+    expect(params['daily.DAILY_BAG_LUCK_WEIGHT.epic']).toBe(0.15);
+    expect(params['daily.DAILY_BAG_LUCK_WEIGHT.rare']).toBe(0.35);
+    expect(params['daily.DAILY_BAG_LUCK_WEIGHT.uncommon']).toBe(0.5);
+    expect(params['daily.LIQUID_ASHES_BAG_BONUS']).toBe(0.05);
+    expect(params['daily.WIDOWS_FILTER_BAG_LUCK_MULTIPLIER']).toBe(2);
+    expect(params['farm.VOID_NECTAR_GROWTH_FACTOR']).toBe(0.5);
+    expect(params['farm.MIDAS_TEAR_COIN_BONUS']).toBe(0.1);
+    expect(params['farm.FARM_COIN_MULTIPLIER_CAP']).toBe(2);
+    expect(params['farm.FARM_GROWTH_REDUCTION_CAP']).toBe(0.75);
+    expect(params['farm.FARM_GROWTH_MULTIPLIER_FLOOR']).toBe(0.1);
+  });
+
+  it('guarda: a regra também pega constante numérica sem export', () => {
+    const src = 'const A_B = 5;\n  const RATE: number = 0.5;\nconst NAME = "x";\nconst lower = 3;\nconst OBJ = { a: 1 };';
+    expect([...src.matchAll(NUMERIC_CONST_RE)].map((m) => m[1])).toEqual(['A_B', 'RATE']);
   });
 
   it('span de negócio economy params com a contagem e outcome ok', async () => {
@@ -188,6 +234,8 @@ describe('GET /internal/economy/params', () => {
     for (const file of SOURCE_FILES) {
       const src = readFileSync(path.join(API_DIR, file), 'utf8');
       for (const m of src.matchAll(/export const ([A-Z][A-Z0-9_]+)/g)) found.add(m[1]);
+      // Constante numérica sem export (também dentro de função): exporte e exponha, ou ignore com o motivo.
+      for (const m of src.matchAll(NUMERIC_CONST_RE)) found.add(m[1]);
     }
     expect(found.size).toBeGreaterThan(0);
     const missing = [...found].filter((n) => !exposed.has(n) && !(n in IGNORED_CONSTANTS));

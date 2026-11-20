@@ -1,6 +1,18 @@
 import { PrismaClient } from '@prisma/client';
 import { DomainError } from '../errors/DomainError.js';
-import { rollDailyBagCoins } from '../utils/economy.js';
+import {
+  rollDailyBagCoins,
+  DAILY_BAG_GUARANTEED_SEEDS,
+  DAILY_BAG_BONUS_CHANCE_PERCENT,
+  DAILY_BAG_LUCK_WEIGHT,
+  VOID_NECTAR_GROWTH_FACTOR,
+  LIQUID_ASHES_BAG_BONUS,
+  WIDOWS_FILTER_BAG_LUCK_MULTIPLIER,
+  MIDAS_TEAR_COIN_BONUS,
+  FARM_COIN_MULTIPLIER_CAP,
+  FARM_GROWTH_REDUCTION_CAP,
+  FARM_GROWTH_MULTIPLIER_FLOOR,
+} from '../utils/economy.js';
 import { PLANTS, getBagPool, findPlant, DECORATIONS, findDecoration, CONSUMABLES, findConsumable } from '../utils/catalog.js';
 import { CanvasRendererService, isInsidePlantation } from './CanvasRendererService.js';
 import { BotNotifier } from './BotNotifier.js';
@@ -134,7 +146,7 @@ export class FarmService {
       }
     }
     const rawCoinMultiplier = (1.0 + coinBonus) * coinFactor;
-    const effectiveCoinMultiplier = Number(Math.min(2.0, rawCoinMultiplier).toFixed(2));
+    const effectiveCoinMultiplier = Number(Math.min(FARM_COIN_MULTIPLIER_CAP, rawCoinMultiplier).toFixed(2));
 
     // 2. Growth time multiplier: base 1.0 - sum of growth_reduction (e.g. Suspiro 0.05 each, max 75%) * growth_halve/factor
     let growthReduction = 0;
@@ -149,8 +161,10 @@ export class FarmService {
       }
     }
     // Strict 75% max reduction cap
-    const cappedReduction = Math.min(0.75, growthReduction);
-    const effectiveGrowthMultiplier = Number(Math.max(0.1, (1.0 - cappedReduction) * growthFactor).toFixed(2));
+    const cappedReduction = Math.min(FARM_GROWTH_REDUCTION_CAP, growthReduction);
+    const effectiveGrowthMultiplier = Number(
+      Math.max(FARM_GROWTH_MULTIPLIER_FLOOR, (1.0 - cappedReduction) * growthFactor).toFixed(2)
+    );
 
     // 3. Wither freeze: any active wither_freeze buff
     const freezeBuffs = activeBuffs.filter((b) => b.type === 'wither_freeze');
@@ -574,16 +588,16 @@ export class FarmService {
 
     const seedsWon: { itemId: string; count: number }[] = [];
     const guaranteedPlant = pick('common');
-    if (guaranteedPlant) seedsWon.push({ itemId: guaranteedPlant, count: 3 });
+    if (guaranteedPlant) seedsWon.push({ itemId: guaranteedPlant, count: DAILY_BAG_GUARANTEED_SEEDS });
 
-    // Base chances: 3% epic, 10% rare, 20% uncommon
+    // Base chances (DAILY_BAG_BONUS_CHANCE_PERCENT): 3% epic, 10% rare, 20% uncommon
     // Bonuses: buffs.dailySpecialItemBonus (e.g. +5% = +0.05 per Cinzas Líquidas)
     // Multipliers: buffs.dailyLuckMultiplier (e.g. 2.0 with Filtro da Viúva)
     const extraLuck = buffs.dailySpecialItemBonus * 100; // e.g. 5
     const mult = buffs.dailyLuckMultiplier; // e.g. 2 or 1
-    const epicChance = (3 + extraLuck * 0.15) * mult;
-    const rareChance = (10 + extraLuck * 0.35) * mult;
-    const uncommonChance = (20 + extraLuck * 0.50) * mult;
+    const epicChance = (DAILY_BAG_BONUS_CHANCE_PERCENT.epic + extraLuck * DAILY_BAG_LUCK_WEIGHT.epic) * mult;
+    const rareChance = (DAILY_BAG_BONUS_CHANCE_PERCENT.rare + extraLuck * DAILY_BAG_LUCK_WEIGHT.rare) * mult;
+    const uncommonChance = (DAILY_BAG_BONUS_CHANCE_PERCENT.uncommon + extraLuck * DAILY_BAG_LUCK_WEIGHT.uncommon) * mult;
 
     const roll = Math.random() * 100;
     const bonus =
@@ -1075,7 +1089,7 @@ export class FarmService {
           // Halve remaining time for currently growing plants
           for (const s of growingSlots) {
             const remaining = s.harvestAt!.getTime() - now.getTime();
-            const newHarvest = new Date(now.getTime() + Math.round(remaining * 0.5));
+            const newHarvest = new Date(now.getTime() + Math.round(remaining * VOID_NECTAR_GROWTH_FACTOR));
             await tx.farmSlot.update({
               where: { id: s.id },
               data: { harvestAt: newHarvest },
@@ -1086,7 +1100,7 @@ export class FarmService {
             data: {
               playerId,
               type: 'growth_halve',
-              value: 0.5,
+              value: VOID_NECTAR_GROWTH_FACTOR,
               expiresAt: new Date(now.getTime() + 24 * 3600 * 1000),
               source: 'void_nectar',
             },
@@ -1114,7 +1128,7 @@ export class FarmService {
             data: {
               playerId,
               type: 'coin_multiplier',
-              value: 0.10,
+              value: MIDAS_TEAR_COIN_BONUS,
               expiresAt: null,
               source: 'midas_tear',
             },
@@ -1194,7 +1208,7 @@ export class FarmService {
             data: {
               playerId,
               type: 'daily_bag_bonus',
-              value: 0.05,
+              value: LIQUID_ASHES_BAG_BONUS,
               expiresAt: null,
               source: 'liquid_ashes',
             },
@@ -1224,7 +1238,7 @@ export class FarmService {
             data: {
               playerId,
               type: 'daily_bag_luck',
-              value: 2.0,
+              value: WIDOWS_FILTER_BAG_LUCK_MULTIPLIER,
               expiresAt: new Date(now.getTime() + 7 * 24 * 3600 * 1000),
               source: 'widows_filter',
             },
