@@ -7,14 +7,19 @@
  *   docker run -d --rm --name jds-test-pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=jds_test -p 127.0.0.1:55432:5432 postgres:16-alpine
  *   DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/jds_test npx prisma db push --skip-generate
  *   JDS_TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/jds_test npm test
- * NUNCA aponte para um banco real: os testes apagam a tabela players.
+ * NUNCA aponte para um banco real: os testes apagam a tabela players. Por isso a suíte se recusa a rodar se o
+ * nome do banco não contiver "test" ou se for o mesmo banco do DATABASE_URL de api/.env ou do .env da raiz.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { trace } from '@opentelemetry/api';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import type { FastifyInstance } from 'fastify';
 import { parsePlayersWindow, parseSummaryOptions, parseSummaryWindow, toQuintiles } from '../src/services/EconomySummaryService.js';
 import { DomainError } from '../src/errors/DomainError.js';
+import { unsafeTestDbReason } from './helpers/testDbGuard.js';
 
 const NOW = 1_763_400_000_000;
 
@@ -123,6 +128,29 @@ describe('toQuintiles', () => {
 });
 
 const DB_URL = process.env.JDS_TEST_DATABASE_URL;
+// Trava contra apagar a tabela players de um banco de verdade.
+const UNSAFE_DB = DB_URL ? unsafeTestDbReason(DB_URL) : null;
+describe('trava do banco de teste (unsafeTestDbReason)', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'jds-guard-'));
+  const envFile = path.join(dir, '.env');
+  writeFileSync(envFile, 'DATABASE_URL=postgresql://u:p@localhost:5432/jds_test_real?schema=public\n');
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('aceita banco com "test" no nome e diferente do .env', () => {
+    expect(unsafeTestDbReason('postgresql://u:p@127.0.0.1:55432/jds_test', [envFile])).toBeNull();
+    expect(unsafeTestDbReason('postgresql://u:p@127.0.0.1:5432/jds_test_real', [path.join(dir, 'nao-existe')])).toBeNull();
+  });
+  it('recusa banco sem "test" no nome', () => {
+    expect(unsafeTestDbReason('postgresql://u:p@127.0.0.1:5432/jardim_das_sombras', [envFile])).toMatch(/não contém "test"/);
+  });
+  it('recusa o mesmo banco do DATABASE_URL do .env (localhost = 127.0.0.1, porta padrão 5432)', () => {
+    expect(unsafeTestDbReason('postgresql://outro:x@127.0.0.1/jds_test_real', [envFile])).toMatch(/mesmo banco/);
+  });
+  it('recusa URL inválida', () => {
+    expect(unsafeTestDbReason('não é url', [envFile])).toMatch(/não é uma URL/);
+  });
+});
+
 const API_KEY = 'chave-de-teste-economia';
 const ROUTE = '/internal/economy/summary';
 
@@ -141,6 +169,7 @@ describe.skipIf(!DB_URL)('GET /internal/economy/summary (Postgres)', () => {
   }
 
   beforeAll(async () => {
+    if (UNSAFE_DB) throw new Error(`JDS_TEST_DATABASE_URL recusada: ${UNSAFE_DB}. Use um banco descartável.`);
     process.env.DATABASE_URL = DB_URL;
     process.env.API_KEY = API_KEY;
     process.env.NODE_ENV = 'test';
@@ -151,13 +180,14 @@ describe.skipIf(!DB_URL)('GET /internal/economy/summary (Postgres)', () => {
   });
 
   afterAll(async () => {
-    if (app) {
+    if (app && !UNSAFE_DB) {
       await app.prisma.player.deleteMany({});
       await app.close();
     }
   });
 
   beforeEach(async () => {
+    if (UNSAFE_DB || !app) throw new Error('banco de teste recusado ou servidor não subiu');
     await app.prisma.player.deleteMany({});
     exporter.reset();
   });
