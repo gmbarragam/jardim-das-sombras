@@ -8,11 +8,14 @@ const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
+/** Chave de exemplo (README/.env.example). Em produção, precisa ser trocada: ver apiKeyStartupWarning. */
+export const DEFAULT_API_KEY = 'jardim_secret_api_key_2026';
+
 const configSchema = z.object({
   PORT: z.coerce.number().default(3040),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   DATABASE_URL: z.string().default('postgresql://postgres:postgres@localhost:5432/jardim_das_sombras?schema=public'),
-  API_KEY: z.string().default('jardim_secret_api_key_2026'),
+  API_KEY: z.string().default(DEFAULT_API_KEY),
   CORS_ORIGINS: z.string().default('*'),
   ASSETS_PATH: z.string().default(path.resolve(__dirname, '../../assets')),
   PUBLIC_URL: z.string().default('http://localhost:3040'),
@@ -39,3 +42,22 @@ export const config = configSchema.parse({
 });
 
 export type Config = z.infer<typeof configSchema>;
+
+/**
+ * Aviso de subida quando a API_KEY de produção é a chave de exemplo (pública no repositório) ou está vazia.
+ * Só avisa: não impede a subida, porque a ravena em produção depende do serviço. Devolve null se está tudo certo.
+ */
+export function apiKeyStartupWarning(cfg: { NODE_ENV: string; API_KEY: string } = config): string | null {
+  if (cfg.NODE_ENV !== 'production') return null;
+  if (cfg.API_KEY === DEFAULT_API_KEY) {
+    return (
+      'API_KEY de produção é a chave de exemplo do repositório (pública): qualquer um pode chamar as rotas do bot ' +
+      'e assinar links de administração da fazenda. Gere outra (ex.: openssl rand -hex 32), troque no .env do Jardim ' +
+      'e na JARDIM_API_KEY da ravena-ai, e recrie o container.'
+    );
+  }
+  if (!cfg.API_KEY.trim()) {
+    return 'API_KEY de produção está vazia: nenhuma chamada do bot autentica. Defina API_KEY no .env do Jardim (igual à JARDIM_API_KEY da ravena-ai).';
+  }
+  return null;
+}

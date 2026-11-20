@@ -1,19 +1,33 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { config } from '../config.js';
 import { DomainError } from '../errors/DomainError.js';
 import { verifyAdminToken } from '../utils/token.js';
+
+function hashToken(token: string): Buffer {
+  return createHash('sha256').update(token).digest();
+}
+
+/**
+ * Compara com a API_KEY em tempo constante: os dois lados viram SHA-256 (mesmo tamanho) antes do
+ * timingSafeEqual, então nem o conteúdo nem o tamanho da chave vazam pelo tempo de resposta.
+ */
+export function isValidApiKey(token: unknown, apiKey: string = config.API_KEY): boolean {
+  if (typeof token !== 'string' || !token || !apiKey) return false;
+  return timingSafeEqual(hashToken(token), hashToken(apiKey));
+}
 
 export function isTrustedRequest(req: FastifyRequest): boolean {
   const authHeader = req.headers.authorization;
   const apiKeyHeader = req.headers['x-api-key'];
 
-  if (apiKeyHeader && apiKeyHeader === config.API_KEY) {
+  if (isValidApiKey(apiKeyHeader)) {
     return true;
   }
 
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.substring(7).trim();
-    if (token === config.API_KEY) {
+    if (isValidApiKey(token)) {
       return true;
     }
   }
