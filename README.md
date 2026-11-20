@@ -64,6 +64,9 @@ make down        # Encerra os containers
 docker compose up -d --build
 ```
 A API iniciará em `http://127.0.0.1:3040`.
+Para registrar o commit da imagem (campo `version` de `GET /internal/economy/params`, usado pelo painel da economia
+da Ravena), construa com `GIT_SHA=$(git rev-parse --short HEAD) docker compose build`; sem a variável, o build
+funciona igual e `version` vem `null`.
 
 ### 3. Execução Local para Desenvolvimento
 
@@ -145,7 +148,7 @@ O microsserviço disponibiliza mais de 30 endpoints organizados por domínio (Cu
 | **Mochila & Decoração** | `GET /inventory/:user_id`, `POST /farm/:user_id/decorate`, `PUT /farm/:user_id/decorations` | Pública / API_KEY |
 | **Rankings & Digests** | `GET /rankings/wealth`, `GET /rankings/farmers`, `GET /rankings/digest` | Pública |
 | **Administração Bot** | `POST /admin/give`, `POST /admin/give-all`, `POST /admin/buff`, `POST /admin/transfer` | API_KEY (Fail-closed) |
-| **Painel da Economia** | `GET /internal/economy/summary`, `GET /internal/economy/players` | API_KEY (Fail-closed) |
+| **Painel da Economia** | `GET /internal/economy/summary`, `GET /internal/economy/players`, `GET /internal/economy/params` | API_KEY (Fail-closed) |
 | **Super Admin** | `GET /super-admin`, `POST /super-admin/api/plants`, `POST /super-admin/api/reload` | Super Admin Password |
 
 📖 **Acesse a documentação completa com todos os parâmetros, esquemas JSON e exemplos em:**
