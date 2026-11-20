@@ -89,6 +89,8 @@ nunca é gravada (pode conter texto do usuário, ex. `Planta desconhecida: "<tex
 | `farm decorate` | `jds.decorate.op` = equip/unequip/batch, `jds.decorate.count` |
 | `shop buy` | `jds.shop.quantity`, `jds.shop.item_id`, `jds.shop.cost` |
 | `inventory get` | `jds.inventory.found`, `jds.inventory.items` |
+| `economy summary` | `GET /internal/economy/summary` (painel da economia): `jds.economy.window_ms`, `jds.economy.full_history` (from=0), `jds.economy.balances` (false com `balances=0`), `jds.economy.accounts` e `jds.economy.holders` (ausentes com `balances=0`), `jds.economy.ledger_available` (false: o Jardim ainda não tem extrato). Sem ID de jogador; parâmetro inválido vira `app.outcome=rejected` |
+| `economy players` | `GET /internal/economy/players` (saldo por jogador para o painel): `jds.economy.window_ms`, `jds.economy.players` (quantos jogadores com saldo diferente de zero). Os IDs ficam só na resposta, nunca no span; parâmetro inválido vira `app.outcome=rejected` |
 | `prisma {Model}.{op}` | `db.system.name`, `db.operation.name`, `db.collection.name` |
 
 Todos os spans de negócio e os spans SERVER das rotas por usuário têm `jds.user.id`.

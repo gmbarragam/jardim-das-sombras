@@ -17,6 +17,7 @@ import { inventoryRoutes } from './routes/inventory.js';
 import { rankingsRoutes } from './routes/rankings.js';
 import { adminRoutes } from './routes/admin.js';
 import { superAdminRoutes } from './routes/superAdmin.js';
+import { internalRoutes } from './routes/internal.js';
 
 export async function buildServer() {
   const fastify = Fastify({
@@ -125,6 +126,7 @@ export async function buildServer() {
   await fastify.register(rankingsRoutes);
   await fastify.register(adminRoutes);
   await fastify.register(superAdminRoutes);
+  await fastify.register(internalRoutes);
 
   // Error handling
   fastify.setErrorHandler((error, request, reply) => {

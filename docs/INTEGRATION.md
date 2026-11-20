@@ -112,6 +112,17 @@ Rotas de consulta pública (`GET /health`, `GET /farm/:user_id`, `GET /farm/:use
 | `POST` | `/admin/give` | `API_KEY` | `{"userId": "123", "itemId": "40", "amount": 1, "coins": 5000}` | Concede Petalitas, sementes, elixires ou decorações VIP (IDs 40 a 48). |
 | `POST` | `/admin/buff` | `API_KEY` | `{"userId": "123", "type": "growth_time_multiplier", "value": 0.8, "durationHours": 24}` | Aplica multiplicadores temporários ou permanentes na fazenda (ex: benefícios para apoiadores do bot). |
 
+### 3.5. Painel da Economia (interno)
+
+| Método | Endpoint | Auth | Descrição |
+|---|---|---|---|
+| `GET` | `/internal/economy/summary?from=<epoch_ms>&to=<epoch_ms>[&balances=0\|1][&received=0\|1]` | `API_KEY` (`x-api-key`) | Resumo agregado das Petalitas para o painel da ravena-ai. `from` inclusivo, `to` exclusivo, `from=0` = histórico inteiro; 400 se `to <= from` ou `to > agora + 60 s`. `balances` (padrão `1`): com `0` pula o retrato de saldos e devolve `balances: null` (pedaços históricos da carga). `received` (padrão `0`) é aceito por consistência com o waifuletes e ignorado: sem extrato, `receivedByQuintile` é sempre `[]`. Outros valores nesses dois parâmetros: 400. |
+| `GET` | `/internal/economy/players?from=<epoch_ms>&to=<epoch_ms>` | `API_KEY` (`x-api-key`) | Saldo por jogador para o painel da ravena-ai. Mesma validação do resumo e janela de no máximo 8 dias (`from=0` não vale); fora disso, 400 `INVALID_PAYLOAD`. |
+
+Resposta: `currency: "petalitas"`, `schemaVersion: 1`, `generatedAt`, `window`, `ledger: { available: false, flows: [] }` (o Jardim ainda não tem extrato de Petalitas), `balances` (retrato de `players.coins` no instante da consulta: `total` = soma de todos os saldos, `holders` = contas com saldo > 0, `accounts`, `p50`/`p90`, `top10Share` e 5 `quintiles` `{ q, n, min, max, sum }` entre os holders) e `receivedByQuintile: []`. Com `balances=0`, `balances` vem `null`. Nenhum dado por jogador sai da rota. Os quintos saem sempre preenchidos, mesmo com `n < 10` (é moeda de jogo; identificar jogadores não é problema); só um quinto sem membros (menos de 5 holders) vem com `n: 0` e `min`/`max`/`sum` nulos.
+
+Resposta de `/internal/economy/players`: `currency: "petalitas"`, `schemaVersion: 1`, `generatedAt`, `window`, `ledger: { available: false }`, `players` e `flows: []`. `players` traz todo jogador com `coins` diferente de zero (inclui saldo negativo), em ordem de `id`: `{ id, name, platform: null, balance, balanceAtWindowEnd: null, lastActiveAt: null }`, com `name` = `playerName`, senão `farmName`, senão `null`, e `balance` = `coins` no instante da consulta. Sem extrato de Petalitas, a janela só é validada e ecoada: não há fluxos nem saldo reconstruído no fim da janela, e o Jardim não guarda plataforma nem última atividade.
+
 ---
 
 ## 🌾 4. Despacho de Bônus de Colheita (Pesca, Waifus e Cassino)
