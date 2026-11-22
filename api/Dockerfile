@@ -36,6 +36,11 @@ COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 RUN chown -R node:node /app
 USER node
 
+# Commit da imagem, exposto em `version` no GET /internal/economy/params (a ravena guarda junto da mudança de
+# balanceamento). Opcional: sem o build arg fica vazio e a rota devolve version: null.
+ARG GIT_SHA=
+ENV GIT_SHA=$GIT_SHA
+
 EXPOSE 3040
 
 CMD ["sh", "-c", "npx prisma db push --skip-generate && node --import ./dist/instrumentation.js dist/server.js"]
