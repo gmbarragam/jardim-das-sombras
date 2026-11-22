@@ -40,7 +40,9 @@ const SOURCE_FILES = [
   'src/config.ts',
 ];
 
-const IGNORED_CONSTANTS: Record<string, string> = {};
+const IGNORED_CONSTANTS: Record<string, string> = {
+  DEFAULT_API_KEY: 'segredo (chave de exemplo, só para o aviso na subida)',
+};
 
 /** `const NOME = <número>` sem export, também indentada (dentro de função). */
 const NUMERIC_CONST_RE = /^\s*const ([A-Z][A-Z0-9_]+)\s*(?::\s*number\s*)?=\s*[-+(]?\d/gm;
